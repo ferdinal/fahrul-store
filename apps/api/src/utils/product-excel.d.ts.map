@@ -1,0 +1,1 @@
+{"version":3,"file":"product-excel.d.ts","sourceRoot":"","sources":["product-excel.ts"],"names":[],"mappings":"AAEA,MAAM,WAAW,gBAAgB;IAC/B,OAAO,EAAE,MAAM,CAAC;IAChB,IAAI,EAAE,MAAM,CAAC;IACb,SAAS,EAAE,MAAM,CAAC;CACnB;AAED,wBAAgB,iBAAiB,CAAC,MAAM,EAAE,MAAM,GAAG,gBAAgB,EAAE,CAgCpE"}

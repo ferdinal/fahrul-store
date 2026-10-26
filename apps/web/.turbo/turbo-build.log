@@ -1,0 +1,43 @@
+
+> web@0.1.0 build /Users/regi/Developments/MONOREPO/fahrul-store/apps/web
+> next build
+
+[1m[38;2;173;127;168m▲ Next.js 16.3.5[39m[22m (Turbopack)
+- Environments: .env.local
+[32m[1m✓[22m[39m Running next.config.ts took 105ms
+
+[37m[1m [22m[39m Creating an optimized production build ...
+[32m[1m✓[22m[39m Compiled successfully in 858ms
+[?25l[37m[1m [22m[39m Running TypeScript  [36m.[39m[2K[1G[37m[1m [22m[39m Running TypeScript  [36m..[39m[2K[1G[37m[1m [22m[39m Running TypeScript  [36m...[39m[2K[1G[37m[1m [22m[39m Running TypeScript  [36m.[39m[2K[1G[37m[1m [22m[39m Running TypeScript  [36m..[39m[2K[1G[37m[1m [22m[39m Running TypeScript  [36m...[39m[2K[1G[37m[1m [22m[39m Running TypeScript  [36m.[39m[2K[1G[37m[1m [22m[39m Running TypeScript  [36m..[39m[2K[1G[37m[1m [22m[39m Running TypeScript  [36m...[39m[2K[1G[?25h[?25l[37m[1m [22m[39m Finished TypeScript in 1680ms  [36m.[39m[2K[1G[?25h[37m[1m [22m[39m Finished TypeScript in 1680ms    [32m[1m✓[22m[39m Finished TypeScript in 1680ms 
+[?25l[37m[1m [22m[39m Collecting page data using 7 workers  [36m.[39m[2K[1G[37m[1m [22m[39m Collecting page data using 7 workers  [36m..[39m[2K[1G[37m[1m [22m[39m Collecting page data using 7 workers  [36m...[39m[2K[1G[37m[1m [22m[39m Collecting page data using 7 workers  [36m.[39m[2K[1G[?25h[37m[1m [22m[39m Collecting page data using 7 workers in 743ms    [32m[1m✓[22m[39m Collecting page data using 7 workers in 743ms 
+[?25l[37m[1m [22m[39m Generating static pages using 7 workers (0/18)  [36m[    ][39m[2K[1G[37m[1m [22m[39m Generating static pages using 7 workers (1/18)  [36m[=   ][39m[2K[1G[?25h[32m[1m✓[22m[39m Generating static pages using 7 workers (18/18) in 345ms
+[?25l[37m[1m [22m[39m Finalizing page optimization  [36m.[39m[2K[1G[?25h[37m[1m [22m[39m Finalizing page optimization in 10ms    [32m[1m✓[22m[39m Finalizing page optimization in 10ms 
+
+[4mRoute (app)[24m
+┌ ○ /
+├ ○ /_not-found
+├ ○ /customer-order-details
+├ ○ /customer-orders
+├ ƒ /customer-orders/[id]
+├ ○ /customer-orders/import
+├ ○ /customer-orders/new
+├ ○ /dashboard
+├ ○ /icon.png
+├ ○ /inventory
+├ ƒ /inventory/[productId]
+├ ○ /login
+├ ○ /my-customer-orders
+├ ○ /production-batches
+├ ○ /production-orders
+├ ƒ /production-orders/[id]
+├ ○ /production-planning
+├ ○ /production-processes
+├ ○ /products
+├ ƒ /products/[id]/workflow
+└ ○ /users
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+[?25h
