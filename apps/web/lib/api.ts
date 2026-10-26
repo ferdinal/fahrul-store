@@ -6,6 +6,18 @@ interface ApiError {
   message?: string;
 }
 
+function buildApiUrl(endpoint: string): string {
+  const baseUrl = API_URL.replace(/\/+$/, '');
+  const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+
+  // Jika base URL adalah /api, hindari prefix /api ganda.
+  if (baseUrl === '/api' && (path === '/api' || path.startsWith('/api/'))) {
+    return `${baseUrl}${path.slice(4)}`;
+  }
+
+  return `${baseUrl}${path}`;
+}
+
 export async function apiFetch<T>(
   endpoint: string,
   options: RequestInit = {},
@@ -13,7 +25,7 @@ export async function apiFetch<T>(
   const token =
     typeof window !== 'undefined' ? useAuthStore.getState().accessToken : null;
 
-  const response = await fetch(`${API_URL}${endpoint}`, {
+  const response = await fetch(buildApiUrl(endpoint), {
     ...options,
     headers: {
       'Content-Type': 'application/json',
