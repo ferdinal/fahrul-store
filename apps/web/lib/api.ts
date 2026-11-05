@@ -1,24 +1,18 @@
 import { useAuthStore } from '@/store/authStore';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+export const API_BASE_URL = (
+  process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'
+)
+  .replace(/\/+$/, '')
+  .replace(/\/api$/i, '');
 
 interface ApiError {
   message?: string;
 }
 
 function buildApiUrl(endpoint: string): string {
-  const baseUrl = API_URL.replace(/\/+$/, '');
   const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-
-  console.log('API', API_URL);
-  console.log('BASE', baseUrl + path);
-
-  // Jika base URL adalah /api, hindari prefix /api ganda.
-  if (baseUrl === '/api' && (path === '/api' || path.startsWith('/api/'))) {
-    return `${baseUrl}${path.slice(4)}`;
-  }
-
-  return `${baseUrl}${path}`;
+  return `${API_BASE_URL}${path}`;
 }
 
 export async function apiFetch<T>(

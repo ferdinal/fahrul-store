@@ -45,20 +45,27 @@ export default function LoginPage() {
         }),
       });
 
-      login(response.data.user, response.data.accessToken);
+      const destinationByRole: Record<string, string> = {
+        admin: '/dashboard',
+        'admin-produksi': '/admin-produksi',
+        operator: '/operator',
+        user: '/my-customer-orders',
+      };
+      const role = response.data.user.role;
+      const destination = Object.prototype.hasOwnProperty.call(
+        destinationByRole,
+        role,
+      )
+        ? destinationByRole[role]
+        : undefined;
 
-      // Redirect berdasarkan role
-      if (response.data.user.role === 'admin') {
-        router.push('/dashboard');
-      } else if (response.data.user.role === 'admin-produksi') {
-        router.push('/admin-produksi');
-      } else if (response.data.user.role === 'operator') {
-        router.push('/operator');
-      } else if (response.data.user.role === 'user') {
-        router.push('/my-customer-orders');
-      } else {
+      if (!destination) {
         setError('Role user tidak dikenali.');
+        return;
       }
+
+      login(response.data.user, response.data.accessToken);
+      router.push(destination);
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Login gagal');
     } finally {

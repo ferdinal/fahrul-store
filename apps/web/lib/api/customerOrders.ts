@@ -1,7 +1,5 @@
-import { apiFetch } from '@/lib/api';
+import { API_BASE_URL, apiFetch } from '@/lib/api';
 import { useAuthStore } from '@/store/authStore';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
 export type CustomerOrderStatus =
   | 'pending'
@@ -267,7 +265,7 @@ export async function previewCustomerOrderCsv(
   formData.append('file', file);
 
   const response = await fetch(
-    `${API_URL}/api/customer-orders/import/preview`,
+    `${API_BASE_URL}/api/customer-orders/import/preview`,
     {
       method: 'POST',
 
@@ -344,7 +342,7 @@ export async function importCustomerOrderCsv(
   formData.append('fulfillmentDueDate', fulfillmentDueDate);
   formData.append('orderNumbersToImport', JSON.stringify(orderNumbersToImport));
 
-  const response = await fetch(`${API_URL}/api/customer-orders/import`, {
+  const response = await fetch(`${API_BASE_URL}/api/customer-orders/import`, {
     method: 'POST',
 
     headers: {
