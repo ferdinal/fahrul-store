@@ -8,6 +8,7 @@ import {
   ProductionLotModel,
   ProductionOrderModel,
   ProductionResultModel,
+  ProductionTransferModel,
   StockMovementModel,
 } from '@fahrul-store/database';
 import {
@@ -23,6 +24,13 @@ import {
 const router: ExpressRouter = Router();
 router.use(authenticate);
 router.use((req, res, next) => {
+  // Admin Produksi boleh membaca daftar dan detail Production Order
+  // untuk kebutuhan halaman Planning. Hak tulis tetap mengikuti middleware
+  // admin yang sudah ada.
+  const role = (req as AuthRequest).user?.role;
+  const isProductionPlanningRead =
+    req.method === 'GET' && (role === 'admin' || role === 'admin-produksi');
+
   // Operator hanya boleh mengakses endpoint pencatatan hasil dan finalisasi PO.
   // Endpoint admin lainnya tetap dilindungi requireAdmin.
   const isOperatorProductionAction =
@@ -30,7 +38,8 @@ router.use((req, res, next) => {
     /^\/[^/]+\/steps\/[^/]+\/(?:results|complete-step|complete-production)\/?$/.test(
       req.path,
     );
-  if (isOperatorProductionAction) return next();
+
+  if (isProductionPlanningRead || isOperatorProductionAction) return next();
   return requireAdmin(req, res, next);
 });
 type AnyRecord = Record<string, any>;
@@ -149,6 +158,91 @@ function isFinalStep(steps: AnyRecord[], stepId: string) {
   );
 }
 
+async function finalizeSingleStepOrderIfReady(
+  order: AnyRecord,
+  session: mongoose.ClientSession,
+): Promise<boolean> {
+  const steps: AnyRecord[] = order.steps ?? [];
+  if (
+    steps.length !== 1 ||
+    steps[0]?.status !== 'completed' ||
+    ['completed', 'cancelled'].includes(String(order.status))
+  ) {
+    return false;
+  }
+
+  const step = steps[0];
+  const remainingInputLot = await ProductionLotModel.findOne(
+    eligibleInputLotFilter(order._id, step),
+  )
+    .session(session)
+    .lean();
+  if (remainingInputLot) return false;
+
+  const finalLots = await ProductionLotModel.find({
+    productionOrder: order._id,
+    sourceStepId: step._id,
+    sourceResult: { $ne: null },
+    status: 'active',
+    availableQuantity: { $gt: 0 },
+  }).session(session);
+  const finalGoodQuantity = finalLots.reduce(
+    (sum: number, lot: AnyRecord) =>
+      sum + Number(lot.availableQuantity ?? 0),
+    0,
+  );
+  if (finalGoodQuantity < Number(order.quantity ?? 0)) return false;
+
+  const finalMovementKey = `production-order-final:${String(order._id)}`;
+  const existingFinalMovement = await StockMovementModel.findOne({
+    idempotencyKey: finalMovementKey,
+  })
+    .session(session)
+    .lean();
+  if (!existingFinalMovement) {
+    await FinishedGoodsInventoryModel.updateOne(
+      { product: order.product },
+      {
+        $inc: { quantity: finalGoodQuantity },
+        $setOnInsert: { allocatedQuantity: 0 },
+      },
+      { upsert: true, session, setDefaultsOnInsert: true },
+    );
+    await StockMovementModel.create(
+      [
+        {
+          product: order.product,
+          type: 'IN',
+          quantity: finalGoodQuantity,
+          referenceType: 'production_order',
+          referenceId: order._id,
+          referenceItemId: null,
+          idempotencyKey: finalMovementKey,
+        },
+      ],
+      { session },
+    );
+  }
+
+  if (finalLots.length > 0) {
+    await ProductionLotModel.updateMany(
+      {
+        _id: { $in: finalLots.map((lot: AnyRecord) => lot._id) },
+        status: 'active',
+      },
+      { $set: { status: 'finished', availableQuantity: 0 } },
+      { session },
+    );
+  }
+
+  order.finalGoodQuantity = finalGoodQuantity;
+  order.shortfallQuantity = 0;
+  order.status = 'completed';
+  order.completedAt = new Date();
+  await order.save({ session });
+  return true;
+}
+
 router.get('/', async (_req, res) => {
   try {
     const orders = await ProductionOrderModel.find()
@@ -156,7 +250,57 @@ router.get('/', async (_req, res) => {
       .populate('product')
       .sort({ createdAt: -1 })
       .lean();
-    return res.json({ success: true, data: orders });
+    // Sertakan lot input aktif per proses untuk form Catat Hasil Admin Produksi.
+    // Helper ini juga dipakai oleh proses pencatatan hasil agar aturan lot konsisten.
+    const ordersWithInputLots = await Promise.all(
+      orders.map(async (order: AnyRecord) => {
+        const steps = await Promise.all(
+          ((order as AnyRecord).steps ?? []).map(async (step: AnyRecord) => {
+            const inputLots = await ProductionLotModel.find(
+              eligibleInputLotFilter((order as AnyRecord)._id, step),
+            )
+              .select(
+                '_id lotCode quantity availableQuantity sourceStepId status',
+              )
+              .lean();
+            // Lot tujuan transfer juga memakai sourceStepId/sourceResult dari
+            // proses asal. Jangan tampilkan lot transfer sebagai output baru
+            // yang bisa dikirim ulang oleh proses asal setelah halaman di-refresh.
+            // Sisa pada lot sumber asli tetap bisa ditransfer secara parsial.
+            const transferredTargetLotIds =
+              await ProductionTransferModel.distinct('targetLot', {
+                productionOrder: (order as AnyRecord)._id,
+                sourceStepId: step._id,
+                targetLot: { $ne: null },
+              });
+
+            const outputLots = await ProductionLotModel.find({
+              productionOrder: (order as AnyRecord)._id,
+              sourceStepId: step._id,
+              sourceResult: { $ne: null },
+              status: 'active',
+              availableQuantity: { $gt: 0 },
+              _id: { $nin: transferredTargetLotIds },
+            })
+              .select(
+                '_id lotCode quantity availableQuantity sourceStepId status',
+              )
+              .lean();
+            return {
+              ...step,
+              inputLots,
+              outputLots,
+              // Riwayat transfer tetap dikirim meskipun semua output lot
+              // sudah habis/tertransfer dan outputLots menjadi array kosong.
+              hasTransferredOutput: transferredTargetLotIds.length > 0,
+            };
+          }),
+        );
+        return { ...order, steps };
+      }),
+    );
+
+    return res.json({ success: true, data: ordersWithInputLots });
   } catch (error) {
     console.error('Get production orders:', error);
     return res
@@ -500,6 +644,16 @@ router.post(
   async (req: AuthRequest, res) => {
     const orderId = String(req.params.id ?? '');
     const stepId = String(req.params.stepId ?? '');
+
+    console.log('[COMPLETE STEP REQUEST]', {
+      method: req.method,
+      path: req.originalUrl,
+      orderId,
+      stepId,
+      actorRole: String((req.user as AnyRecord | undefined)?.role ?? ''),
+      userId: req.user?.userId ?? null,
+    });
+
     if (!isValidId(orderId) || !isValidId(stepId)) {
       return res.status(400).json({
         success: false,
@@ -522,7 +676,9 @@ router.post(
 
     const session = await mongoose.startSession();
     try {
-      let responseData: AnyRecord | null = null;
+      // Mutated inside withTransaction; initialize as a record so TypeScript
+      // does not narrow the post-transaction read to `never`.
+      let responseData: AnyRecord = {};
       await session.withTransaction(async () => {
         const order = (await ProductionOrderModel.findById(orderId).session(
           session,
@@ -560,6 +716,31 @@ router.post(
         )
           .session(session)
           .lean();
+
+        console.log('[COMPLETE STEP DEBUG]', {
+          orderNumber: order.orderNumber,
+          orderId: String(order._id),
+          stepId: String(step._id),
+          processName: step.processName,
+          sequence: step.sequence,
+          statusBefore: step.status,
+          quantityProcessed: Number(step.quantityProcessed ?? 0),
+          quantityGood: Number(step.quantityGood ?? 0),
+          quantityScrap: Number(step.quantityScrap ?? 0),
+          ownerOperator: step.ownerOperator ? String(step.ownerOperator) : null,
+          actorRole,
+          userId: req.user?.userId ?? null,
+          remainingInputLot: remainingInputLot
+            ? {
+                lotId: String((remainingInputLot as AnyRecord)._id),
+                lotCode: String((remainingInputLot as AnyRecord).lotCode ?? ''),
+                availableQuantity: Number(
+                  (remainingInputLot as AnyRecord).availableQuantity ?? 0,
+                ),
+              }
+            : null,
+        });
+
         if (remainingInputLot) {
           throw httpError(
             409,
@@ -573,10 +754,13 @@ router.post(
           );
         }
         if (step.status === 'completed') {
+          await finalizeSingleStepOrderIfReady(order, session);
           responseData = {
             orderId: order._id,
             stepId: step._id,
             status: step.status,
+            orderStatus: order.status,
+            finalGoodQuantity: Number(order.finalGoodQuantity ?? 0),
           };
           return;
         }
@@ -584,13 +768,29 @@ router.post(
         step.status = 'completed';
         step.completedAt = new Date();
         order.status = 'in_progress';
-        await order.save({ session });
+        const productionFinished = await finalizeSingleStepOrderIfReady(
+          order,
+          session,
+        );
+        if (!productionFinished) await order.save({ session });
+
+        console.log('[COMPLETE STEP SUCCESS]', {
+          orderNumber: order.orderNumber,
+          orderId: String(order._id),
+          stepId: String(step._id),
+          processName: step.processName,
+          statusAfter: step.status,
+          orderStatus: order.status,
+        });
+
         responseData = {
           orderId: order._id,
           orderNumber: order.orderNumber,
           stepId: step._id,
           processName: step.processName,
           status: step.status,
+          orderStatus: order.status,
+          finalGoodQuantity: Number(order.finalGoodQuantity ?? 0),
           quantityProcessed: Number(step.quantityProcessed ?? 0),
           quantityGood: Number(step.quantityGood ?? 0),
           quantityScrap: Number(step.quantityScrap ?? 0),
@@ -598,13 +798,22 @@ router.post(
       });
       return res.json({
         success: true,
-        message: 'Proses ditandai selesai tanpa mencatat hasil baru.',
+        message:
+          responseData?.orderStatus === 'completed'
+            ? 'Proses dan produksi selesai. Barang baik otomatis masuk ke Finished Goods.'
+            : 'Proses ditandai selesai tanpa mencatat hasil baru.',
         data: responseData,
       });
     } catch (error) {
       const err = error as Error & { status?: number };
       const status = err.status ?? 500;
-      if (status === 500) console.error('Gagal menyelesaikan proses:', error);
+      console.error('[COMPLETE STEP FAILED]', {
+        orderId,
+        stepId,
+        status,
+        message: err.message,
+        error,
+      });
       return res.status(status).json({
         success: false,
         message: err.message || 'Gagal menyelesaikan proses.',
@@ -664,7 +873,9 @@ router.post('/:id/steps/:stepId/results', async (req: AuthRequest, res) => {
         });
   const session = await mongoose.startSession();
   try {
-    let resultResponse: AnyRecord | null = null;
+    // withTransaction mutates this value inside its callback, which TypeScript
+    // cannot track for control-flow narrowing outside the callback.
+    let resultResponse: AnyRecord = {};
     await session.withTransaction(async () => {
       const order = (await ProductionOrderModel.findById(orderId).session(
         session,
@@ -875,15 +1086,19 @@ router.post('/:id/steps/:stepId/results', async (req: AuthRequest, res) => {
         step.status = 'partially_completed';
         step.completedAt = null;
       }
-      // Mencatat hasil proses tidak otomatis menyelesaikan PO atau menambah inventori.
-      // Inventori barang jadi hanya bertambah melalui endpoint Selesai produksi.
       order.status = 'in_progress';
-      await order.save({ session });
+      const productionFinished = input.completeStep
+        ? await finalizeSingleStepOrderIfReady(order, session)
+        : false;
+      if (!productionFinished) await order.save({ session });
       resultResponse = { result: productionResult, productionOrder: order };
     });
     return res.status(201).json({
       success: true,
-      message: 'Hasil produksi berhasil dicatat.',
+      message:
+        resultResponse.productionOrder?.status === 'completed'
+          ? 'Hasil dicatat. Produksi selesai dan barang baik sudah masuk ke Finished Goods.'
+          : 'Hasil produksi berhasil dicatat.',
       data: resultResponse,
     });
   } catch (error) {
@@ -1041,6 +1256,13 @@ router.post(
             sum + Number(lot.availableQuantity ?? 0),
           0,
         );
+        const targetQuantity = Number(order.quantity ?? 0);
+        if (finalGoodQuantity < targetQuantity) {
+          throw httpError(
+            409,
+            `Produksi belum dapat diselesaikan: jumlah barang baik ${finalGoodQuantity} dari target ${targetQuantity}. Lanjutkan produksi sampai target terpenuhi.`,
+          );
+        }
         // Idempotensi inventori ditentukan oleh StockMovement, bukan oleh
         // order.finalGoodQuantity. Field kuantitas akhir adalah hasil produksi,
         // bukan penanda bahwa inventori sudah pernah ditambah.
@@ -1088,10 +1310,7 @@ router.post(
         }
 
         order.finalGoodQuantity = finalGoodQuantity;
-        order.shortfallQuantity = Math.max(
-          0,
-          Number(order.quantity ?? 0) - finalGoodQuantity,
-        );
+        order.shortfallQuantity = 0;
         order.status = 'completed';
         order.completedAt = new Date();
         await order.save({ session });

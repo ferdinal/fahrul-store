@@ -11,7 +11,6 @@ import {
 
 import {
   authenticate,
-  requireRole,
   type AuthRequest,
 } from '../middlewares/auth.middleware.js';
 
@@ -24,7 +23,37 @@ type TransferResponseData = {
 
 const router: ExpressRouter = Router();
 
-router.use(authenticate, requireRole('operator'));
+router.use(authenticate);
+
+// Operator tetap memiliki akses penuh ke seluruh endpoint Operator.
+// Admin Produksi hanya diberi akses untuk melihat daftar Operator dan
+// membuat transfer dari halaman Admin Produksi.
+router.use((req: AuthRequest, res, next) => {
+  const role = req.user?.role;
+
+  if (role === 'operator') {
+    return next();
+  }
+
+  const isAdminOperatorLookup =
+    role === 'admin-produksi' &&
+    req.method === 'GET' &&
+    req.path.replace(/\/$/, '') === '/operators';
+
+  const isAdminTransfer =
+    role === 'admin-produksi' &&
+    req.method === 'POST' &&
+    /^\/orders\/[^/]+\/steps\/[^/]+\/assignments\/?$/.test(req.path);
+
+  if (isAdminOperatorLookup || isAdminTransfer) {
+    return next();
+  }
+
+  return res.status(403).json({
+    success: false,
+    message: 'Anda tidak memiliki akses ke fitur Operator.',
+  });
+});
 
 const oid = (value: string) => new mongoose.Types.ObjectId(value);
 
@@ -88,12 +117,30 @@ function isAssigned(step: AnyRecord, operatorId: string) {
   );
 }
 
-// Penugasan admin berada pada Production Order (umumnya melalui proses pertama).
-// Karena operator memilih proses dari daftar proses PO, akses tidak dibatasi
-// hanya pada step yang memiliki assignment tersendiri.
+// Assignment dicatat pada proses yang memang dikirim ke operator.
 function isOrderAssigned(order: AnyRecord, operatorId: string) {
   return (order.steps ?? []).some((step: AnyRecord) =>
     isAssigned(step, operatorId),
+  );
+}
+
+async function hasIncomingTransferForStep(
+  orderId: unknown,
+  step: AnyRecord,
+  operatorId: string,
+) {
+  const dependencyIds = (step.dependsOn ?? [])
+    .map(String)
+    .filter(mongoose.isValidObjectId);
+  if (dependencyIds.length === 0) return false;
+
+  return Boolean(
+    await ProductionTransferModel.exists({
+      productionOrder: orderId,
+      assignedOperator: oid(operatorId),
+      targetStepId: null,
+      sourceStepId: { $in: dependencyIds.map(oid) },
+    }),
   );
 }
 
@@ -133,9 +180,16 @@ router.get('/available', async (req: AuthRequest, res) => {
   }
 
   try {
+    const incomingOrderIds = await ProductionTransferModel.distinct(
+      'productionOrder',
+      { assignedOperator: oid(operatorId), targetStepId: null },
+    );
     const orders = (await ProductionOrderModel.find({
       status: { $nin: ['cancelled', 'completed'] },
-      'steps.assignments.assignedOperator': oid(operatorId),
+      $or: [
+        { 'steps.assignments.assignedOperator': oid(operatorId) },
+        { _id: { $in: incomingOrderIds } },
+      ],
     })
       .populate('product', 'name')
       .populate('batch', 'batchNumber')
@@ -145,9 +199,30 @@ router.get('/available', async (req: AuthRequest, res) => {
 
     for (const order of orders) {
       const steps = (order.steps ?? []) as AnyRecord[];
-      if (!isOrderAssigned(order, operatorId)) continue;
+      if (
+        !isOrderAssigned(order, operatorId) &&
+        !incomingOrderIds.some(
+          (id: unknown) => String(id) === String(order._id),
+        )
+      )
+        continue;
 
       for (const step of steps) {
+        const assignedToCurrentOperator = isAssigned(step, operatorId);
+        const assignedToAnotherOperator = (step.assignments ?? []).some(
+          (assignment: AnyRecord) =>
+            String(assignment.assignedOperator ?? '') !== operatorId,
+        );
+        const hasTransferForStep =
+          !assignedToAnotherOperator &&
+          (await hasIncomingTransferForStep(order._id, step, operatorId));
+        if (
+          ['completed', 'cancelled'].includes(String(step.status)) ||
+          step.ownerOperator != null ||
+          (assignedToAnotherOperator && !assignedToCurrentOperator)
+        )
+          continue;
+
         const lots = (await ProductionLotModel.find(
           stepInputLotQuery(order._id, step),
         )
@@ -213,6 +288,10 @@ router.get('/available', async (req: AuthRequest, res) => {
           availableQuantity,
           canStart,
           blockedReason,
+          canClaim:
+            ['planned', 'partially_completed'].includes(String(step.status)) &&
+            (!assignedToAnotherOperator || assignedToCurrentOperator),
+          showInNew: assignedToCurrentOperator || hasTransferForStep,
         });
       }
     }
@@ -266,17 +345,56 @@ router.get('/mine', async (req: AuthRequest, res) => {
         )
           .select('_id lotCode availableQuantity quantity sourceStepId status')
           .lean()) as AnyRecord[];
-        const outputLots = (await ProductionLotModel.find({
+        const [transferredTargetLotIds, transferTotals] = await Promise.all([
+          ProductionTransferModel.distinct('targetLot', {
+            productionOrder: order._id,
+            sourceStepId: step._id,
+          }),
+          ProductionTransferModel.aggregate([
+            {
+              $match: {
+                productionOrder: order._id,
+                sourceStepId: step._id,
+              },
+            },
+            {
+              $group: {
+                _id: '$sourceLot',
+                quantity: { $sum: '$quantity' },
+              },
+            },
+          ]),
+        ]);
+
+        // Output lot yang masih punya sisa tetap bisa dikirim lagi.
+        // Lot tujuan transfer sendiri bukan output dari proses penerima.
+        const allOutputLots = (await ProductionLotModel.find({
           productionOrder: order._id,
           sourceStepId: step._id,
           sourceResult: { $ne: null },
           status: 'active',
-          availableQuantity: { $gt: 0 },
+          _id: { $nin: transferredTargetLotIds },
         })
           .select(
             '_id lotCode availableQuantity quantity sourceStepId status sourceResult',
           )
           .lean()) as AnyRecord[];
+        const transferredQuantityByLot = new Map<string, number>(
+          transferTotals.map((item: AnyRecord) => [
+            String(item._id),
+            Number(item.quantity ?? 0),
+          ] as [string, number]),
+        );
+        const outputLots = allOutputLots.filter(
+          (lot) => Number(lot.availableQuantity ?? 0) > 0,
+        );
+        const outputLotsTransferred =
+          allOutputLots.length > 0 &&
+          allOutputLots.every(
+            (lot) =>
+              (transferredQuantityByLot.get(String(lot._id)) ?? 0) >=
+              Number(lot.quantity ?? 0),
+          );
 
         data.push({
           order: serializeOrder(order),
@@ -287,6 +405,7 @@ router.get('/mine', async (req: AuthRequest, res) => {
             0,
           ),
           outputLots,
+          outputLotsTransferred,
           outputAvailableQuantity: outputLots.reduce(
             (sum, lot) => sum + Number(lot.availableQuantity ?? 0),
             0,
@@ -375,10 +494,25 @@ router.post(
         });
       }
 
-      if (!isOrderAssigned(order, operatorId)) {
+      const assignedToAnotherOperator = (step.assignments ?? []).some(
+        (assignment: AnyRecord) =>
+          String(assignment.assignedOperator ?? '') !== operatorId,
+      );
+      const hasOrderTask =
+        isOrderAssigned(order, operatorId) ||
+        Boolean(
+          await ProductionTransferModel.exists({
+            productionOrder: order._id,
+            assignedOperator: oid(operatorId),
+          }),
+        );
+      if (
+        !hasOrderTask ||
+        (!isAssigned(step, operatorId) && assignedToAnotherOperator)
+      ) {
         return res.status(403).json({
           success: false,
-          message: 'Production Order ini tidak ditugaskan kepada Anda.',
+          message: 'Proses ini tidak tersedia untuk akun Anda.',
         });
       }
 
@@ -388,16 +522,18 @@ router.post(
 
       const now = new Date();
 
-      // PENTING: jangan gunakan positional operator `steps.$` di sini.
-      // Query juga memeriksa assignment pada array `steps`, sehingga positional
-      // `$` dapat terikat ke elemen array yang berbeda dari stepId yang dipilih.
       // `arrayFilters` memastikan hanya elemen dengan _id == stepId yang diubah.
       const claimed = (await ProductionOrderModel.findOneAndUpdate(
         {
           _id: oid(orderId),
           status: { $nin: ['cancelled', 'completed'] },
-          'steps._id': oid(stepId),
-          'steps.assignments.assignedOperator': oid(operatorId),
+          steps: {
+            $elemMatch: {
+              _id: oid(stepId),
+              ownerOperator: null,
+              status: { $in: ['planned', 'partially_completed'] },
+            },
+          },
         },
         {
           $set: {
@@ -539,7 +675,12 @@ router.post(
           throw httpError(404, 'Step sumber tidak ditemukan.');
         }
 
-        if (String(sourceStep.ownerOperator ?? '') !== operatorId) {
+        const isProductionAdmin = req.user?.role === 'admin-produksi';
+
+        if (
+          !isProductionAdmin &&
+          String(sourceStep.ownerOperator ?? '') !== operatorId
+        ) {
           throw httpError(
             403,
             'Hanya pemilik proses sumber yang dapat mentransfer barang.',
@@ -674,10 +815,24 @@ router.post(
           });
           await targetLot.save({ session });
 
+          const activeRecipientSteps = steps.filter(
+            (step) =>
+              String(step.ownerOperator ?? '') === recipientId &&
+              ['in_progress', 'partially_completed'].includes(
+                String(step.status),
+              ) &&
+              (step.dependsOn ?? []).some(
+                (dependencyId: unknown) =>
+                  String(dependencyId) === sourceStepId,
+              ),
+          );
+          const matchingActiveStep =
+            activeRecipientSteps.length === 1 ? activeRecipientSteps[0] : null;
+
           const transfer = new ProductionTransferModel({
             productionOrder: order._id,
             sourceStepId: sourceStep._id,
-            targetStepId: null,
+            targetStepId: matchingActiveStep?._id ?? null,
             sourceLot: sourceLot._id,
             targetLot: targetLot._id,
             quantity: recipientQuantity,
@@ -687,14 +842,29 @@ router.post(
             notes: input.notes,
             transferredAt: new Date(),
           });
+
+          if (matchingActiveStep) {
+            matchingActiveStep.assignments ??= [];
+            matchingActiveStep.assignments.push({
+              assignedBy: oid(operatorId),
+              assignedOperator: oid(recipientId),
+              quantity: recipientQuantity,
+              sourceTransfer: transfer._id,
+              assignedAt: new Date(),
+              notes: input.notes,
+            });
+          }
+
           await transfer.save({ session });
           createdTransfers.push({
             transfer,
             targetLot,
-            targetStep: null,
+            targetStep: matchingActiveStep,
             assignedOperator: recipient,
           });
         }
+
+        await order.save({ session });
 
         responseHolder.value = {
           duplicate: false,
@@ -816,11 +986,16 @@ router.get('/incoming-transfers', async (req: AuthRequest, res) => {
 
       for (const step of steps) {
         if (String(step._id) === String(transfer.sourceStepId)) continue;
-        if (!['planned', 'partially_completed'].includes(step.status)) continue;
-        // Proses yang sudah diklaim siapa pun tidak boleh dipilih ulang.
-        // Proses milik operator sendiri tetap dikelola dari tab Pekerjaan saya.
-        if (step.ownerOperator != null) continue;
+        const ownedByOperator =
+          String(step.ownerOperator ?? '') === operatorId;
         if (
+          !['planned', 'partially_completed'].includes(step.status) &&
+          !(ownedByOperator && step.status === 'in_progress')
+        )
+          continue;
+        if (step.ownerOperator != null && !ownedByOperator) continue;
+        if (
+          !ownedByOperator &&
           (step.assignments ?? []).some(
             (assignment: AnyRecord) =>
               String(assignment.assignedOperator ?? '') !== operatorId,
@@ -847,7 +1022,12 @@ router.get('/incoming-transfers', async (req: AuthRequest, res) => {
           const dependencyStep = steps.find(
             (item) => String(item._id) === dependencyId,
           );
-          if (!dependencyStep || dependencyStep.status !== 'completed') {
+          if (
+            !dependencyStep ||
+            !['completed', 'partially_completed'].includes(
+              String(dependencyStep.status),
+            )
+          ) {
             allDependenciesAvailable = false;
             break;
           }
@@ -978,17 +1158,23 @@ router.post(
               404,
               `Proses ${stepId} tidak ditemukan pada Production Order.`,
             );
-          if (!['planned', 'partially_completed'].includes(step.status))
+          const alreadyOwnedByOperator =
+            String(step.ownerOperator ?? '') === operatorId;
+          if (
+            !['planned', 'partially_completed'].includes(step.status) &&
+            !(alreadyOwnedByOperator && step.status === 'in_progress')
+          )
             throw httpError(
               409,
               `Proses ${step.processName ?? stepId} tidak dapat dipilih karena statusnya ${step.status}.`,
             );
-          if (step.ownerOperator != null)
+          if (step.ownerOperator != null && !alreadyOwnedByOperator)
             throw httpError(
               409,
               `Proses ${step.processName ?? stepId} sudah diklaim dan tidak dapat dipilih ulang.`,
             );
           if (
+            !alreadyOwnedByOperator &&
             (step.assignments ?? []).some(
               (assignment: AnyRecord) =>
                 String(assignment.assignedOperator ?? '') !== operatorId,
@@ -1022,7 +1208,12 @@ router.post(
             const dependencyStep = steps.find(
               (item) => String(item._id) === dependencyId,
             );
-            if (!dependencyStep || dependencyStep.status !== 'completed') {
+            if (
+              !dependencyStep ||
+              !['completed', 'partially_completed'].includes(
+                String(dependencyStep.status),
+              )
+            ) {
               throw httpError(
                 409,
                 `Dependensi proses ${step.processName ?? stepId} belum selesai.`,
@@ -1046,11 +1237,11 @@ router.post(
 
         for (const step of selectedSteps) {
           step.assignments = step.assignments ?? [];
-          const alreadyAssigned = step.assignments.some(
+          const alreadyLinkedToTransfer = step.assignments.some(
             (assignment: AnyRecord) =>
-              String(assignment.assignedOperator ?? '') === operatorId,
+              String(assignment.sourceTransfer ?? '') === transferId,
           );
-          if (!alreadyAssigned) {
+          if (!alreadyLinkedToTransfer) {
             step.assignments.push({
               assignedBy: transfer.transferredBy,
               assignedOperator: oid(operatorId),
@@ -1059,6 +1250,14 @@ router.post(
               assignedAt: new Date(),
               notes: transfer.notes ?? '',
             });
+          }
+          // Memilih proses untuk transfer sekaligus berarti operator mulai
+          // mengerjakan proses tersebut, sama seperti klaim dari daftar Baru.
+          if (step.ownerOperator == null) {
+            step.ownerOperator = oid(operatorId);
+            step.claimedAt = new Date();
+            step.startedAt ??= new Date();
+            step.status = 'in_progress';
           }
         }
 
@@ -1071,6 +1270,63 @@ router.post(
         }
 
         transfer.targetStepId = firstSelectedStep._id;
+        order.status = 'in_progress';
+        order.startedAt ??= new Date();
+
+        const otherPendingTransfers = (await ProductionTransferModel.find({
+          productionOrder: order._id,
+          assignedOperator: oid(operatorId),
+          targetStepId: null,
+          _id: { $ne: transfer._id },
+        })
+          .session(session)
+          .exec()) as AnyRecord[];
+
+        for (const pendingTransfer of otherPendingTransfers) {
+          const pendingSourceStepId = String(pendingTransfer.sourceStepId);
+          const matchingSteps = steps.filter(
+            (step) =>
+              String(step.ownerOperator ?? '') === operatorId &&
+              ['in_progress', 'partially_completed'].includes(
+                String(step.status),
+              ) &&
+              (step.dependsOn ?? []).some(
+                (dependencyId: unknown) =>
+                  String(dependencyId) === pendingSourceStepId,
+              ),
+          );
+          if (matchingSteps.length !== 1) continue;
+
+          const pendingLot = await ProductionLotModel.findOne({
+            _id: pendingTransfer.targetLot,
+            productionOrder: order._id,
+            sourceStepId: pendingTransfer.sourceStepId,
+            status: 'active',
+            availableQuantity: { $gt: 0 },
+          }).session(session);
+          if (!pendingLot) continue;
+
+          const matchingStep = matchingSteps[0]!;
+          matchingStep.assignments ??= [];
+          const alreadyLinked = matchingStep.assignments.some(
+            (assignment: AnyRecord) =>
+              String(assignment.sourceTransfer ?? '') ===
+              String(pendingTransfer._id),
+          );
+          if (!alreadyLinked) {
+            matchingStep.assignments.push({
+              assignedBy: pendingTransfer.transferredBy,
+              assignedOperator: oid(operatorId),
+              quantity: Number(pendingTransfer.quantity),
+              sourceTransfer: pendingTransfer._id,
+              assignedAt: new Date(),
+              notes: pendingTransfer.notes ?? '',
+            });
+          }
+          pendingTransfer.targetStepId = matchingStep._id;
+          await pendingTransfer.save({ session });
+        }
+
         await order.save({ session });
         await transfer.save({ session });
         responseData = {

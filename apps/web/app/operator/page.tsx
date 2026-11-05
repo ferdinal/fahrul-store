@@ -27,7 +27,6 @@ import {
   type ProductionLot,
 } from '@/lib/api/operatorWork';
 
-type Tab = 'available' | 'mine';
 type ResultForm = {
   inputLotId: string;
   processedQuantity: string;
@@ -35,17 +34,21 @@ type ResultForm = {
   scrapQuantity: string;
   notes: string;
 };
+type WorkFilter = 'all' | 'new' | 'working' | 'completed';
 type TransferForm = {
   sourceLotId: string;
   quantity: string;
   notes: string;
 };
+type DisplayWorkItem = OperatorWorkItem & {
+  incomingTransfer?: IncomingTransfer;
+};
 
 const emptyResult: ResultForm = {
   inputLotId: '',
-  processedQuantity: '',
-  goodQuantity: '',
-  scrapQuantity: '',
+  processedQuantity: '0',
+  goodQuantity: '0',
+  scrapQuantity: '0',
   notes: '',
 };
 const emptyTransfer: TransferForm = {
@@ -77,6 +80,13 @@ function processName(step: OperatorWorkItem['step']) {
     `Proses ${step.sequence ?? ''}`
   );
 }
+function canFinalizeAfterCompletingStep(work: OperatorWorkItem) {
+  return (work.order.steps ?? []).every(
+    (step) =>
+      step._id === work.step._id ||
+      ['completed', 'cancelled'].includes(step.status),
+  );
+}
 function productName(work: OperatorWorkItem) {
   return typeof work.order.product === 'object'
     ? work.order.product?.name || 'Produk'
@@ -102,8 +112,8 @@ function statusClass(status: string) {
     return 'border-orange-200 bg-orange-50 text-orange-700';
   return 'border-blue-200 bg-blue-50 text-blue-700';
 }
-function lotLabel(lot: ProductionLot) {
-  return `${lot.lotCode} · tersedia ${formatNumber(lot.availableQuantity)} unit`;
+function lotLabel(lot: ProductionLot, index: number) {
+  return `Lot ${index + 1} (${formatNumber(lot.availableQuantity)}pcs)`;
 }
 function Notice({
   type,
@@ -131,29 +141,67 @@ function Notice({
     </div>
   );
 }
-function StatCard({
+function QuantityControl({
   label,
   value,
-  tone,
+  min = 0,
+  max,
+  onChange,
+  className = '',
 }: {
   label: string;
-  value: number;
-  tone: 'red' | 'blue' | 'amber' | 'green';
+  value: string;
+  min?: number;
+  max?: number;
+  onChange: (value: string) => void;
+  className?: string;
 }) {
-  const tones = {
-    red: 'bg-red-50 text-red-700 ring-red-100',
-    blue: 'bg-blue-50 text-blue-700 ring-blue-100',
-    amber: 'bg-amber-50 text-amber-700 ring-amber-100',
-    green: 'bg-emerald-50 text-emerald-700 ring-emerald-100',
-  };
+  const current = value === '' ? 0 : Number(value);
+  const decrement = () => onChange(String(Math.max(min, current - 1)));
+  const increment = () =>
+    onChange(
+      String(max === undefined ? current + 1 : Math.min(max, current + 1)),
+    );
+
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-      <p className="text-xs font-medium text-slate-500 sm:text-sm">{label}</p>
-      <p
-        className={`mt-2 inline-flex rounded-xl px-3 py-1.5 text-2xl font-bold tabular-nums ring-1 ${tones[tone]}`}
-      >
-        {formatNumber(value)}
-      </p>
+    <div className={`min-w-0 rounded-2xl p-3 ${className}`}>
+      <label className="mb-1.5 block text-xs font-semibold text-slate-600">
+        {label}
+      </label>
+      <div className="flex h-11 w-full min-w-0 items-stretch overflow-hidden rounded-xl border border-slate-200 bg-white">
+        <input
+          required
+          type="number"
+          min={min}
+          max={max}
+          step={1}
+          inputMode="numeric"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          className="h-full min-w-0 w-full flex-1 bg-transparent px-1 text-center text-sm font-bold tabular-nums text-slate-900 outline-none sm:text-base"
+        />
+        <div className="flex w-8 shrink-0 flex-col border-l border-slate-200 sm:w-9">
+          <button
+            type="button"
+            aria-label={`Tambah ${label}`}
+            disabled={max !== undefined && current >= max}
+            onClick={increment}
+            className="flex h-1/2 flex-1 items-center justify-center text-xs font-bold leading-none text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+          >
+            +
+          </button>
+          <div className="h-px w-full bg-slate-200" />
+          <button
+            type="button"
+            aria-label={`Kurangi ${label}`}
+            disabled={current <= min}
+            onClick={decrement}
+            className="flex h-1/2 flex-1 items-center justify-center text-xs font-bold leading-none text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+          >
+            −
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -161,20 +209,26 @@ function StatCard({
 export default function OperatorPage() {
   const router = useRouter();
   const user = useAuthStore((state) => state.user);
-  const [tab, setTab] = useState<Tab>('available');
   const [available, setAvailable] = useState<OperatorWorkItem[]>([]);
   const [mine, setMine] = useState<OperatorWorkItem[]>([]);
   const [operators, setOperators] = useState<OperatorUser[]>([]);
   const [incomingTransfers, setIncomingTransfers] = useState<
     IncomingTransfer[]
   >([]);
-  const [selectedProcessIds, setSelectedProcessIds] = useState<
-    Record<string, string[]>
-  >({});
+  const [selectedTransferProcessIds, setSelectedTransferProcessIds] = useState<
+    string[]
+  >([]);
+  const [claimModalTransferId, setClaimModalTransferId] = useState<
+    string | null
+  >(null);
   // Checklist untuk memilih beberapa proses tersedia sebelum mulai bekerja.
   const [selectedAvailableKeys, setSelectedAvailableKeys] = useState<string[]>(
     [],
   );
+  const [claimModalOrderId, setClaimModalOrderId] = useState<string | null>(
+    null,
+  );
+  const [workFilter, setWorkFilter] = useState<WorkFilter>('all');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [busyKey, setBusyKey] = useState('');
@@ -265,52 +319,157 @@ export default function OperatorPage() {
         setRefreshing(true);
         void refresh();
       }
-    }, 15000);
+    }, 60000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
   }, []);
 
-  const summary = useMemo(
-    () => ({
-      available: available.filter(
-        (item) =>
-          item.step.ownerOperator == null &&
-          !['completed', 'cancelled'].includes(item.step.status),
-      ).length,
-      mine: mine.length,
-      running: mine.filter((item) => item.step.status === 'in_progress').length,
-      completed: mine.filter((item) => item.step.status === 'completed').length,
-    }),
-    [available, mine],
+  const currentList = useMemo<DisplayWorkItem[]>(() => {
+    const byStep = new Map<string, DisplayWorkItem>();
+    for (const work of available) {
+      byStep.set(`${work.order._id}:${work.step._id}`, work);
+    }
+    for (const work of mine) {
+      byStep.set(`${work.order._id}:${work.step._id}`, work);
+    }
+
+    // Satu transfer masuk ditampilkan sebagai satu card tugas standar.
+    // Daftar proses lengkapnya tetap dipilih melalui modal Kerjakan.
+    for (const transfer of incomingTransfers) {
+      const firstStep = [...transfer.eligibleSteps].sort(
+        (a, b) => Number(a.sequence ?? 0) - Number(b.sequence ?? 0),
+      )[0];
+      if (!firstStep) continue;
+      const targetLotId = String(
+        (transfer.transfer as typeof transfer.transfer & { targetLot?: string })
+          .targetLot ?? '',
+      );
+      if (!targetLotId) continue;
+      const work: DisplayWorkItem = {
+        order: transfer.order,
+        step: firstStep,
+        inputLots: [
+          {
+            _id: targetLotId,
+            lotCode: `TRANSFER-${transfer.transfer._id}`,
+            quantity: transfer.transfer.quantity,
+            availableQuantity: transfer.transfer.quantity,
+            sourceStepId: transfer.transfer.sourceStepId,
+            status: 'active',
+          },
+        ],
+        availableQuantity: transfer.transfer.quantity,
+        canStart: true,
+        incomingTransfer: transfer,
+      };
+      byStep.set(`transfer:${transfer.transfer._id}`, work);
+    }
+
+    return Array.from(byStep.values()).sort((a, b) => {
+      const orderCompare = String(a.order.orderNumber).localeCompare(
+        String(b.order.orderNumber),
+      );
+      return (
+        orderCompare ||
+        Number(a.step.sequence ?? 0) - Number(b.step.sequence ?? 0)
+      );
+    });
+  }, [available, mine, incomingTransfers]);
+  const workCounts = useMemo(() => {
+    const completed = currentList.filter(
+      (work) =>
+        String(work.step.ownerOperator ?? '') === user?.id &&
+        work.step.status === 'completed' &&
+        !(work.inputLots ?? []).some((lot) => lot.availableQuantity > 0),
+    ).length;
+    const newlyAvailable = new Set(
+      currentList
+        .filter(
+          (work) =>
+            work.step.ownerOperator == null &&
+            work.showInNew !== false &&
+            !['completed', 'cancelled'].includes(work.step.status),
+        )
+        .map((work) => work.order._id),
+    ).size;
+    const working = currentList.filter(
+      (work) =>
+        String(work.step.ownerOperator ?? '') === user?.id &&
+        !(
+          work.step.status === 'completed' &&
+          !(work.inputLots ?? []).some((lot) => lot.availableQuantity > 0)
+        ) &&
+        work.step.status !== 'cancelled',
+    ).length;
+    return {
+      all: newlyAvailable + working + completed,
+      new: newlyAvailable,
+      working,
+      completed,
+    };
+  }, [currentList, user?.id]);
+  const filteredList = useMemo(
+    () => {
+      const matchesFilter = (work: DisplayWorkItem) => {
+        const hasRemainingInput = (work.inputLots ?? []).some(
+          (lot) => lot.availableQuantity > 0,
+        );
+        const isCompleted =
+          work.step.status === 'completed' && !hasRemainingInput;
+        const ownedByCurrentOperator =
+          String(work.step.ownerOperator ?? '') === user?.id;
+        const isNew =
+          work.step.ownerOperator == null &&
+          work.showInNew !== false &&
+          !['completed', 'cancelled'].includes(work.step.status);
+        if (workFilter === 'new') return isNew;
+        if (workFilter === 'working')
+          return (
+            ownedByCurrentOperator &&
+            !isCompleted &&
+            work.step.status !== 'cancelled'
+          );
+        if (workFilter === 'completed')
+          return ownedByCurrentOperator && isCompleted;
+        return (
+          work.step.status !== 'cancelled' &&
+          ((work.step.ownerOperator == null && work.showInNew !== false) ||
+            ownedByCurrentOperator)
+        );
+      };
+
+      const matching = currentList.filter(matchesFilter);
+      // Ringkas semua proses yang belum diklaim menjadi satu kartu per PO
+      // dan produk. Proses yang sudah diklaim tetap tampil satu kartu per step.
+      const seenUnclaimedOrders = new Set<string>();
+      return matching.filter((work) => {
+        const isUnclaimed =
+          work.step.ownerOperator == null &&
+          !['completed', 'cancelled'].includes(work.step.status);
+        if (!isUnclaimed) return true;
+
+        const productId =
+          typeof work.order.product === 'string'
+            ? work.order.product
+            : work.order.product?._id ?? productName(work);
+        const key = `${work.order._id}:${productId}`;
+        if (seenUnclaimedOrders.has(key)) return false;
+        seenUnclaimedOrders.add(key);
+        return true;
+      });
+    },
+    [currentList, user?.id, workFilter],
   );
-  const currentList = tab === 'available' ? available : mine;
   const selectedAvailableWorks = available.filter(
     (work) =>
+      work.order._id === claimModalOrderId &&
       work.step.ownerOperator == null &&
       !['completed', 'cancelled'].includes(work.step.status) &&
+      work.canClaim !== false &&
       selectedAvailableKeys.includes(`${work.order._id}:${work.step._id}`),
   );
-  const availableGroups = useMemo(() => {
-    const groups = new Map<
-      string,
-      { order: OperatorWorkItem['order']; items: OperatorWorkItem[] }
-    >();
-    for (const work of available) {
-      const key = work.order._id;
-      const group = groups.get(key);
-      if (group) group.items.push(work);
-      else groups.set(key, { order: work.order, items: [work] });
-    }
-    return Array.from(groups.values()).map((group) => ({
-      ...group,
-      items: [...group.items].sort(
-        (a, b) => Number(a.step.sequence ?? 0) - Number(b.step.sequence ?? 0),
-      ),
-    }));
-  }, [available]);
-
   const selectedInputLots = (selectedWork?.inputLots ?? []).filter(
     (lot) => lot.availableQuantity > 0,
   );
@@ -353,20 +512,49 @@ export default function OperatorPage() {
     setNotice('');
     const started: string[] = [];
     try {
-      // Setiap proses diklaim lewat endpoint yang sama dengan klaim tunggal.
-      // Backend tetap memvalidasi kepemilikan, dependensi, dan stok secara atomik.
-      for (const work of selectedWorks) {
+      const linkedStepIds = new Set<string>();
+      const orderTransfers = incomingTransfers.filter(
+        (item) => item.order._id === claimModalOrderId,
+      );
+
+      // Kaitkan transfer yang cocok dengan proses terpilih, lalu proses lain
+      // tetap diklaim dari checklist yang sama.
+      for (const transfer of orderTransfers) {
+        const matchingWorks = selectedWorks.filter((work) =>
+          transfer.eligibleSteps.some((step) => step._id === work.step._id),
+        );
+        if (matchingWorks.length === 0) continue;
+        await selectTransferProcesses(
+          transfer.transfer._id,
+          matchingWorks.map((work) => work.step._id),
+        );
+        matchingWorks.forEach((work) => linkedStepIds.add(work.step._id));
+        started.push(
+          ...matchingWorks.map(
+            (work) => `${work.order.orderNumber} · ${processName(work.step)}`,
+          ),
+        );
+      }
+
+      // Proses lain dalam PO tetap bisa diklaim dari checklist yang sama.
+      for (const work of selectedWorks.filter(
+        (item) => !linkedStepIds.has(item.step._id),
+      )) {
         await startOperatorWork(work.order._id, work.step._id);
         started.push(`${work.order.orderNumber} · ${processName(work.step)}`);
       }
+      setWorkFilter('working');
       setSelectedAvailableKeys([]);
+      setSelectedTransferProcessIds([]);
+      setClaimModalOrderId(null);
+      setClaimModalTransferId(null);
       setNotice(
         `Berhasil mengambil ${started.length} proses: ${started.join('; ')}.`,
       );
       await loadWork(true);
-      setTab('mine');
     } catch (err) {
       const message = getErrorMessage(err);
+      if (started.length > 0) setWorkFilter('working');
       setError(
         started.length > 0
           ? `Sebagian proses berhasil diklaim (${started.length}): ${started.join('; ')}. Proses berikutnya gagal: ${message}. Data sudah dimuat ulang.`
@@ -386,9 +574,9 @@ export default function OperatorPage() {
     setResultForm({
       ...emptyResult,
       inputLotId: lots[0]?._id ?? '',
-      processedQuantity: '',
-      goodQuantity: '',
-      scrapQuantity: '',
+      processedQuantity: '0',
+      goodQuantity: '0',
+      scrapQuantity: '0',
     });
     setTransferForm(emptyTransfer);
     setError('');
@@ -476,8 +664,16 @@ export default function OperatorPage() {
           ],
         },
       );
+      let productionCompleted = false;
+      if (completeStep && canFinalizeAfterCompletingStep(selectedWork)) {
+        await completeProductionOrder(
+          selectedWork.order._id,
+          selectedWork.step._id,
+        );
+        productionCompleted = true;
+      }
       setNotice(
-        `Hasil tersimpan: ${formatNumber(processedQuantity)} diproses, ${formatNumber(goodQuantity)} baik, ${formatNumber(scrapQuantity)} rusak${completeStep ? '. Proses ditandai selesai.' : '. Proses masih dapat menerima pencatatan hasil berikutnya.'}`,
+        `Hasil tersimpan: ${formatNumber(processedQuantity)} diproses, ${formatNumber(goodQuantity)} baik, ${formatNumber(scrapQuantity)} rusak${productionCompleted ? '. Proses terakhir dan produksi selesai; jumlah barang jadi aktual sudah dimasukkan ke inventori.' : completeStep ? '. Proses ditandai selesai.' : '. Proses masih dapat menerima pencatatan hasil berikutnya.'}`,
       );
       setSelectedWork(null);
       setFormMode(null);
@@ -517,46 +713,14 @@ export default function OperatorPage() {
     setNotice('');
     try {
       await completeProductionStep(work.order._id, work.step._id);
-      setNotice(
-        `Proses ${processName(work.step)} selesai. Tidak ada hasil atau lot baru yang dibuat.`,
-      );
+      let productionCompleted = false;
+      if (canFinalizeAfterCompletingStep(work)) {
+        await completeProductionOrder(work.order._id, work.step._id);
+        productionCompleted = true;
+      }
+      setNotice(`Proses ${processName(work.step)} selesai. Tidak ada hasil atau lot baru yang dibuat.${productionCompleted ? ' Produksi juga selesai dan jumlah barang jadi aktual sudah dimasukkan ke inventori.' : ''}`);
       setSelectedWork(null);
       setFormMode(null);
-      await loadWork(true);
-    } catch (err) {
-      setError(getErrorMessage(err));
-      await loadWork(true);
-    } finally {
-      setBusyKey('');
-    }
-  }
-
-  async function handleCompleteProduction(work: OperatorWorkItem) {
-    const steps = work.order.steps ?? [];
-    const allStepsTerminal =
-      steps.length > 0 &&
-      steps.every((step) => ['completed', 'cancelled'].includes(step.status));
-    if (!allStepsTerminal) {
-      setError('Selesaikan semua proses wajib sebelum menyelesaikan produksi.');
-      return;
-    }
-    if (work.order.status === 'completed') {
-      setNotice('Production Order ini sudah selesai.');
-      return;
-    }
-    const confirmed = window.confirm(
-      `Selesaikan produksi ${work.order.orderNumber} dan masukkan barang baik ke inventori?`,
-    );
-    if (!confirmed) return;
-    const key = `complete-production:${work.order._id}`;
-    setBusyKey(key);
-    setError('');
-    setNotice('');
-    try {
-      await completeProductionOrder(work.order._id, work.step._id);
-      setNotice(
-        `Produksi ${work.order.orderNumber} selesai. Barang baik sudah diproses untuk masuk inventori.`,
-      );
       await loadWork(true);
     } catch (err) {
       setError(getErrorMessage(err));
@@ -607,7 +771,7 @@ export default function OperatorPage() {
         },
       );
       setNotice(
-        `Transfer total ${formatNumber(quantity)} unit berhasil dibagi ke ${recipientIds.length} operator. Setiap operator menerima bagian kuantitasnya dan memilih proses tujuan sendiri.`,
+        `Berhasil mengirim ${formatNumber(quantity)} unit ke ${recipientIds.length} operator. Setiap operator menerima bagian kuantitasnya dan memilih proses tujuan sendiri.`,
       );
       setSelectedWork(null);
       setFormMode(null);
@@ -616,34 +780,6 @@ export default function OperatorPage() {
       await loadWork(true);
     } catch (err) {
       setError(getErrorMessage(err));
-    } finally {
-      setBusyKey('');
-    }
-  }
-
-  async function handleSelectTransferProcesses(transfer: IncomingTransfer) {
-    const stepIds = selectedProcessIds[transfer.transfer._id] ?? [];
-    if (stepIds.length === 0) {
-      setError('Pilih minimal satu proses sebelum melanjutkan.');
-      return;
-    }
-    const key = `select-transfer:${transfer.transfer._id}`;
-    setBusyKey(key);
-    setError('');
-    setNotice('');
-    try {
-      await selectTransferProcesses(transfer.transfer._id, stepIds);
-      setNotice(
-        `${formatNumber(transfer.transfer.quantity)} unit berhasil ditautkan ke ${stepIds.length} proses pilihan.`,
-      );
-      setSelectedProcessIds((current) => ({
-        ...current,
-        [transfer.transfer._id]: [],
-      }));
-      await loadWork(true);
-    } catch (err) {
-      setError(getErrorMessage(err));
-      await loadWork(true);
     } finally {
       setBusyKey('');
     }
@@ -673,29 +809,37 @@ export default function OperatorPage() {
   }
 
   return (
-    <main className="min-h-dvh overflow-x-hidden bg-slate-50 text-slate-800">
-      <div className="mx-auto w-full max-w-7xl space-y-6 px-4 py-5 sm:px-6 sm:py-7 lg:px-8">
-        <section className="flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:flex-row sm:items-center sm:justify-between sm:p-6">
-          <div className="min-w-0">
-            <p className="text-xs font-bold uppercase tracking-[0.16em] text-red-600">
-              Fahrul Store · Produksi
-            </p>
-            <h1 className="mt-1 text-2xl font-extrabold tracking-tight text-slate-900 sm:text-3xl">
-              Workspace Operator
-            </h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
-              Mulai proses, catat kuantitas hasil, dan serahkan lot baik ke
-              proses berikutnya tanpa memasukkan ID secara manual.
-            </p>
+    <main className="min-h-dvh overflow-x-hidden bg-white text-slate-900">
+      <div className="mx-auto w-full max-w-5xl space-y-6 px-2 py-4 sm:px-3 sm:py-6">
+        <section className="relative overflow-hidden rounded-2xl bg-white px-1 py-2">
+          <div className="pointer-events-none absolute -right-8 -top-10 h-28 w-64 rotate-[32deg] bg-gradient-to-r from-red-600 to-blue-800 opacity-95" />
+          <div className="relative flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="flex size-12 items-center justify-center rounded-full bg-[#102b59] text-lg font-black text-white shadow-sm">
+                FS
+              </div>
+              <p className="text-xl font-extrabold tracking-tight text-[#102b59]">
+                Fahrul Store
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void loadWork(true)}
+              disabled={refreshing}
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+            >
+              {refreshing ? 'Memuat...' : 'Refresh'}
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={() => void loadWork(true)}
-            disabled={refreshing}
-            className={secondaryButtonClass}
-          >
-            {refreshing ? 'Memuat...' : 'Refresh data'}
-          </button>
+          <div className="relative mt-9">
+            <h1 className="text-3xl font-extrabold leading-tight tracking-tight text-[#101d3b] sm:text-4xl">
+              Halo, {user?.username || 'Operator'}
+            </h1>
+            <p className="mt-1 text-2xl font-bold text-[#101d3b] sm:text-3xl">
+              Selamat <span className="text-red-600">bekerja!</span>
+            </p>
+            <div className="mt-2 h-1 w-28 rounded-full bg-red-600" />
+          </div>
         </section>
 
         {error && (
@@ -709,211 +853,66 @@ export default function OperatorPage() {
           </Notice>
         )}
 
-        <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <StatCard
-            label="Pekerjaan tersedia"
-            value={summary.available}
-            tone="blue"
-          />
-          <StatCard label="Proses milik saya" value={summary.mine} tone="red" />
-          <StatCard
-            label="Sedang berjalan"
-            value={summary.running}
-            tone="amber"
-          />
-          <StatCard label="Selesai" value={summary.completed} tone="green" />
-        </section>
+        <nav
+          aria-label="Filter pekerjaan"
+          className="flex w-full items-center gap-6 overflow-x-auto border-b border-slate-200 px-1"
+        >
+          {(
+            [
+              ['all', 'Semua', workCounts.all],
+              ['new', 'Baru', workCounts.new],
+              ['working', 'Dikerjakan', workCounts.working],
+              ['completed', 'Selesai', workCounts.completed],
+            ] as const
+          ).map(([value, label, count]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setWorkFilter(value)}
+              className={`relative shrink-0 py-3 text-sm font-semibold transition ${
+                workFilter === value
+                  ? 'text-blue-700'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              {label} ({count})
+              {workFilter === value && (
+                <span className="absolute inset-x-0 -bottom-px h-[3px] rounded-full bg-blue-700" />
+              )}
+            </button>
+          ))}
+        </nav>
 
-        {incomingTransfers.length > 0 && (
-          <section className="rounded-2xl border border-red-200 bg-white p-4 shadow-sm sm:p-5">
-            <div className="mb-4">
-              <p className="text-xs font-bold uppercase tracking-[0.14em] text-red-700">
-                Transfer masuk
-              </p>
-              <h2 className="mt-1 text-lg font-extrabold text-slate-900">
-                Pilih proses yang akan dikerjakan
-              </h2>
-              <p className="mt-1 text-sm leading-6 text-slate-500">
-                Jumlah transfer adalah kuantitas unit, bukan rentang unit. Pilih
-                satu atau beberapa proses yang tersedia.
-              </p>
-            </div>
-            <div className="space-y-4">
-              {incomingTransfers.map((item) => {
-                const transferId = item.transfer._id;
-                const selected = selectedProcessIds[transferId] ?? [];
-                return (
-                  <article
-                    key={transferId}
-                    className="rounded-xl border border-slate-200 p-4"
-                  >
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                      <div>
-                        <h3 className="font-bold text-slate-900">
-                          {item.order.orderNumber}
-                        </h3>
-                        <p className="mt-1 text-sm text-slate-600">
-                          Dari proses:{' '}
-                          {item.sourceStep?.processName ||
-                            item.sourceStep?.processCode ||
-                            item.sourceStep?.process ||
-                            'Proses sumber'}
-                        </p>
-                        <p className="mt-1 text-sm text-slate-600">
-                          Kuantitas transfer:{' '}
-                          <strong className="text-red-700">
-                            {formatNumber(item.transfer.quantity)} unit
-                          </strong>
-                        </p>
-                      </div>
-                      <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
-                        Menunggu pilihan proses
-                      </span>
-                    </div>
-                    {item.eligibleSteps.length === 0 ? (
-                      <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
-                        Belum ada proses yang dependensinya terpenuhi atau semua
-                        proses yang sesuai sudah diklaim.
-                      </p>
-                    ) : (
-                      <div className="mt-4 space-y-2">
-                        <p className="text-sm font-semibold text-slate-700">
-                          Checklist proses
-                        </p>
-                        {item.eligibleSteps.map((step) => (
-                          <label
-                            key={step._id}
-                            className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-3 hover:border-blue-300 hover:bg-blue-50/40"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={selected.includes(step._id)}
-                              disabled={Boolean(busyKey)}
-                              onChange={(event) =>
-                                setSelectedProcessIds((current) => {
-                                  const currentIds = current[transferId] ?? [];
-                                  return {
-                                    ...current,
-                                    [transferId]: event.target.checked
-                                      ? [...currentIds, step._id]
-                                      : currentIds.filter(
-                                          (id) => id !== step._id,
-                                        ),
-                                  };
-                                })
-                              }
-                              className="mt-1 size-4 accent-red-600"
-                            />
-                            <span>
-                              <strong className="block text-sm text-slate-900">
-                                #{step.sequence ?? '-'} ·{' '}
-                                {step.processName ||
-                                  step.processCode ||
-                                  step.process ||
-                                  'Proses'}
-                              </strong>
-                              <span className="mt-1 block text-xs text-slate-500">
-                                Status: {statusLabel(step.status)}
-                              </span>
-                            </span>
-                          </label>
-                        ))}
-                        <button
-                          type="button"
-                          disabled={Boolean(busyKey) || selected.length === 0}
-                          onClick={() =>
-                            void handleSelectTransferProcesses(item)
-                          }
-                          className={`${primaryButtonClass} mt-2`}
-                        >
-                          {busyKey === `select-transfer:${transferId}`
-                            ? 'Menyimpan pilihan...'
-                            : `Pilih ${selected.length} proses`}
-                        </button>
-                      </div>
-                    )}
-                  </article>
-                );
-              })}
-            </div>
-          </section>
-        )}
-
-        <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div className="flex flex-col gap-3 border-b border-slate-200 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
-            <div>
-              <h2 className="text-lg font-extrabold text-slate-900">
-                Aktivitas produksi
-              </h2>
-              <p className="mt-1 text-sm text-slate-500">
-                Pekerjaan yang sudah dikunci hanya bisa dikerjakan oleh pemilik
-                proses.
-              </p>
-            </div>
-            <div className="flex rounded-xl bg-slate-100 p-1">
-              <button
-                type="button"
-                onClick={() => setTab('available')}
-                className={`rounded-lg px-3 py-2 text-sm font-semibold ${tab === 'available' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500'}`}
-              >
-                Tersedia ({summary.available})
-              </button>
-              <button
-                type="button"
-                onClick={() => setTab('mine')}
-                className={`rounded-lg px-3 py-2 text-sm font-semibold ${tab === 'mine' ? 'bg-white text-red-700 shadow-sm' : 'text-slate-500'}`}
-              >
-                Pekerjaan saya ({summary.mine})
-              </button>
-            </div>
+        <section className="overflow-hidden bg-transparent">
+          <div className="mb-3">
+            <h2 className="text-lg font-extrabold text-[#101d3b]">
+              Daftar pekerjaan
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Tugas baru dan proses yang sudah dikerjakan dalam satu daftar.
+            </p>
           </div>
-
-          {tab === 'available' && !loading && available.length > 0 && (
-            <div className="flex flex-col gap-3 border-b border-blue-100 bg-blue-50/70 p-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
-              <div>
-                <p className="font-bold text-slate-900">Checklist proses</p>
-                <p className="mt-1 text-sm text-slate-600">
-                  Centang satu atau beberapa proses yang tersedia. Proses yang
-                  berhasil diambil menjadi tanggung jawab akunmu dan tidak dapat
-                  diklaim operator lain.
-                </p>
-                <p className="mt-1 text-xs font-semibold text-blue-700">
-                  {selectedAvailableWorks.length} proses dipilih
-                </p>
-              </div>
-              <button
-                type="button"
-                disabled={
-                  Boolean(busyKey) || selectedAvailableWorks.length === 0
-                }
-                onClick={() => void handleStartSelected()}
-                className={primaryButtonClass}
-              >
-                {busyKey === 'claim-selected-processes'
-                  ? 'Mengambil proses...'
-                  : `Ambil ${selectedAvailableWorks.length} proses`}
-              </button>
-            </div>
-          )}
 
           {loading ? (
             <div className="p-10 text-center text-sm text-slate-500">
               Memuat pekerjaan Operator...
             </div>
-          ) : currentList.length === 0 ? (
+          ) : filteredList.length === 0 ? (
             <div className="p-8 text-center sm:p-12">
               <div className="mx-auto flex size-12 items-center justify-center rounded-2xl bg-blue-50 text-xl text-blue-700">
                 ✓
               </div>
               <h3 className="mt-4 font-bold text-slate-900">
-                {tab === 'available'
-                  ? 'Tidak ada pekerjaan tersedia'
-                  : 'Belum ada proses milikmu'}
+                {workFilter === 'all'
+                  ? 'Belum ada pekerjaan'
+                  : workFilter === 'new'
+                    ? 'Tidak ada tugas baru'
+                    : workFilter === 'working'
+                      ? 'Tidak ada pekerjaan yang sedang dikerjakan'
+                      : 'Belum ada pekerjaan selesai'}
               </h3>
               <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">
-                {tab === 'available'
-                  ? 'Pekerjaan muncul saat Production Order ditugaskan kepadamu. Proses bisa diambil sebelum lot input tersedia.'
-                  : 'Mulai pekerjaan dari tab Tersedia untuk mengunci proses ke akunmu.'}
+                Pekerjaan akan muncul saat Production Order ditugaskan kepadamu.
               </p>
               <button
                 type="button"
@@ -923,113 +922,18 @@ export default function OperatorPage() {
                 Periksa lagi
               </button>
             </div>
-          ) : tab === 'available' ? (
-            <div className="space-y-4 p-4">
-              {availableGroups.map((group) => (
-                <article
-                  key={group.order._id}
-                  className="overflow-hidden rounded-2xl border border-slate-200 bg-white"
-                >
-                  <div className="border-b border-blue-100 bg-blue-50/70 p-4 sm:p-5">
-                    <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-blue-700">
-                      Produk / Production Order
-                    </p>
-                    <div className="mt-1 flex flex-col justify-between gap-2 sm:flex-row sm:items-start">
-                      <div>
-                        <h3 className="break-words text-lg font-extrabold text-slate-900">
-                          {group.order.orderNumber}
-                        </h3>
-                        <p className="mt-1 text-sm text-slate-600">
-                          {typeof group.order.product === 'object'
-                            ? group.order.product?.name || 'Produk'
-                            : group.order.product || 'Produk'}
-                        </p>
-                      </div>
-                      <span className="inline-flex w-fit rounded-full border border-blue-200 bg-white px-3 py-1 text-xs font-semibold text-blue-700">
-                        Target {formatNumber(group.order.quantity)} unit
-                      </span>
-                    </div>
-                    <p className="mt-3 text-sm text-slate-600">
-                      Pilih satu atau beberapa proses dari alur produk ini.
-                      Proses dapat diambil lebih awal; pencatatan hasil baru
-                      bisa dilakukan saat lot input tersedia. Proses yang sudah
-                      diambil operator lain atau selesai tidak dapat dipilih.
-                    </p>
-                  </div>
-                  <div className="divide-y divide-slate-100">
-                    {group.items.map((work) => {
-                      const key = `${work.order._id}:${work.step._id}`;
-                      const selectable =
-                        work.step.ownerOperator == null &&
-                        !['completed', 'cancelled'].includes(work.step.status);
-                      const selected = selectedAvailableKeys.includes(key);
-                      return (
-                        <label
-                          key={key}
-                          className={`flex items-start gap-3 p-4 sm:gap-4 sm:px-5 ${selectable ? 'cursor-pointer hover:bg-blue-50/40' : 'cursor-not-allowed bg-slate-50/70'}`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={selected}
-                            disabled={!selectable || Boolean(busyKey)}
-                            onChange={(event) =>
-                              setSelectedAvailableKeys((current) =>
-                                event.target.checked
-                                  ? [
-                                      ...current.filter(
-                                        (itemKey) => itemKey !== key,
-                                      ),
-                                      key,
-                                    ]
-                                  : current.filter(
-                                      (itemKey) => itemKey !== key,
-                                    ),
-                              )
-                            }
-                            className="mt-1 size-4 shrink-0 accent-red-600"
-                          />
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="text-xs font-bold uppercase tracking-wide text-slate-400">
-                                #{work.step.sequence ?? '-'}
-                              </span>
-                              <span className="font-bold text-slate-900">
-                                {processName(work.step)}
-                              </span>
-                              <span
-                                className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${statusClass(work.step.status)}`}
-                              >
-                                {statusLabel(work.step.status)}
-                              </span>
-                            </div>
-                            <p
-                              className={`mt-1 text-sm ${selectable ? 'text-emerald-700' : 'text-slate-500'}`}
-                            >
-                              {selectable
-                                ? work.availableQuantity > 0
-                                  ? `Bisa diambil · Input tersedia: ${formatNumber(work.availableQuantity)} unit`
-                                  : 'Bisa diambil lebih awal · Menunggu lot input tersedia'
-                                : work.step.ownerOperator
-                                  ? 'Proses sudah dimiliki operator.'
-                                  : work.step.status === 'completed'
-                                    ? 'Proses sudah selesai.'
-                                    : work.step.status === 'cancelled'
-                                      ? 'Proses dibatalkan.'
-                                      : work.blockedReason ||
-                                        'Belum bisa diambil.'}
-                            </p>
-                          </div>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </article>
-              ))}
-            </div>
           ) : (
-            <div className="grid grid-cols-1 gap-4 p-4 lg:grid-cols-2">
-              {currentList.map((work) => {
-                const key = `${work.order._id}:${work.step._id}`;
+            <div className="grid grid-cols-1 gap-2 p-2 lg:grid-cols-2">
+              {filteredList.map((work) => {
+                const availableProcessCount = available.filter(
+                  (item) =>
+                    item.order._id === work.order._id &&
+                    item.step.ownerOperator == null &&
+                    !['completed', 'cancelled'].includes(item.step.status),
+                ).length;
+                const key = work.incomingTransfer
+                  ? `transfer:${work.incomingTransfer.transfer._id}`
+                  : `${work.order._id}:${work.step._id}`;
                 const busy = busyKey === key;
                 const hasRemainingInput = (work.inputLots ?? []).some(
                   (lot) => lot.availableQuantity > 0,
@@ -1043,37 +947,64 @@ export default function OperatorPage() {
                 const canRecordResult =
                   work.step.status !== 'cancelled' &&
                   (work.step.status !== 'completed' || hasRemainingInput);
+                const allInputLotsRecorded =
+                  !hasRemainingInput &&
+                  Number(work.step.quantityProcessed ?? 0) > 0;
+                const isLastWorkflowStep = !(work.order.steps ?? []).some(
+                  (step) =>
+                    (step.dependsOn ?? []).some(
+                      (dependency) => String(dependency) === work.step._id,
+                    ),
+                );
+                const finalStepFinished =
+                  isLastWorkflowStep &&
+                  (work.step.status === 'completed' ||
+                    (!hasRemainingInput &&
+                      Number(work.step.quantityProcessed ?? 0) > 0));
+                const finalStepOwned =
+                  isLastWorkflowStep && work.step.ownerOperator != null;
+                const allOutputLotsSent = work.outputLotsTransferred === true;
+                const hasTransferableOutput = (work.outputLots ?? []).some(
+                  (lot) => lot.availableQuantity > 0,
+                );
                 return (
                   <article
                     key={key}
-                    className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-blue-200 hover:shadow-sm sm:p-5"
+                    className={`min-w-0 rounded-2xl border border-slate-200 border-l-4 ${displayStatus === 'completed' ? 'border-l-green-600' : displayStatus === 'in_progress' || displayStatus === 'partially_completed' ? 'border-l-blue-600' : 'border-l-red-600'} bg-white p-2 shadow-sm transition`}
                   >
                     <div className="flex min-w-0 items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">
-                          Production Order
-                        </p>
-                        <h3 className="mt-1 break-words text-lg font-extrabold text-slate-900">
-                          {work.order.orderNumber}
-                        </h3>
-                        <p className="mt-1 break-words text-sm text-slate-500">
+                        <h3 className="break-words text-lg font-extrabold leading-snug text-slate-900">
                           {productName(work)}
-                        </p>
+                        </h3>
+                        <div className="mt-2 inline-flex max-w-full items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1">
+                          <span className="shrink-0 text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                            No. PO
+                          </span>
+                          <span className="break-all text-xs font-bold text-slate-600">
+                            {work.order.orderNumber}
+                          </span>
+                        </div>
                       </div>
                       <span
-                        className={`shrink-0 rounded-full border px-2.5 py-1 text-xs font-semibold ${statusClass(displayStatus)}`}
+                        className={`shrink-0 rounded-lg border-0 px-3 py-1.5 text-xs font-bold ${work.step.ownerOperator == null ? 'bg-yellow-400 text-slate-900' : displayStatus === 'completed' ? 'bg-green-500 text-white' : displayStatus === 'in_progress' || displayStatus === 'partially_completed' ? 'bg-blue-600 text-white' : 'bg-yellow-400 text-slate-900'}`}
                       >
-                        {statusLabel(displayStatus)}
+                        {work.step.ownerOperator == null
+                          ? 'Tugas'
+                          : statusLabel(displayStatus)}
                       </span>
                     </div>
-                    <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50/70 p-4">
+                    <div className="mt-2 rounded-xl bg-slate-100/80 px-3 py-2">
                       <p className="text-xs font-bold uppercase tracking-wide text-blue-700">
-                        Proses produksi · Urutan {work.step.sequence ?? '-'}
+                        Proses produksi
+                        {work.step.ownerOperator == null && !work.incomingTransfer
+                          ? ` · ${availableProcessCount} proses tersedia`
+                          : ` · Urutan ${work.step.sequence ?? '-'}`}
                       </p>
                       <p className="mt-1 font-bold text-slate-900">
                         {processName(work.step)}
                       </p>
-                      <div className="mt-3 grid grid-cols-2 gap-3 border-t border-blue-100 pt-3 text-sm">
+                      <div className="mt-2 grid grid-cols-2 gap-2 border-t border-blue-100 pt-2 text-xs">
                         <div>
                           <p className="text-slate-500">Jumlah order</p>
                           <p className="mt-1 font-bold text-slate-900">
@@ -1088,64 +1019,125 @@ export default function OperatorPage() {
                         </div>
                       </div>
                     </div>
-                    <dl className="mt-4 grid grid-cols-3 gap-2 text-sm">
-                      <div className="rounded-xl bg-slate-50 p-3">
-                        <dt className="text-xs text-slate-500">Diproses</dt>
-                        <dd className="mt-1 font-bold">
+                    {work.incomingTransfer && (
+                      <p className="mt-2 rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-800">
+                        Transfer masuk dari{' '}
+                        {work.incomingTransfer.sourceStep?.processName ||
+                          work.incomingTransfer.sourceStep?.processCode ||
+                          work.incomingTransfer.sourceStep?.process ||
+                          'proses sebelumnya'}{' '}
+                        ·{' '}
+                        {formatNumber(work.incomingTransfer.transfer.quantity)}{' '}
+                        unit · {work.incomingTransfer.eligibleSteps.length}{' '}
+                        proses tersedia untuk dipilih
+                      </p>
+                    )}
+                    <div className="mt-2 grid grid-cols-3 gap-1.5">
+                      <div className="rounded-xl bg-slate-50 p-2">
+                        <p className="text-xs text-slate-500">Diproses</p>
+                        <p className="mt-1 font-bold text-slate-900">
                           {formatNumber(work.step.quantityProcessed ?? 0)}
-                        </dd>
+                        </p>
                       </div>
-                      <div className="rounded-xl bg-emerald-50 p-3">
-                        <dt className="text-xs text-emerald-700">Baik</dt>
-                        <dd className="mt-1 font-bold text-emerald-800">
+                      <div className="rounded-xl bg-emerald-50 p-2">
+                        <p className="text-xs text-emerald-700">Baik</p>
+                        <p className="mt-1 font-bold text-emerald-800">
                           {formatNumber(work.step.quantityGood ?? 0)}
-                        </dd>
+                        </p>
                       </div>
-                      <div className="rounded-xl bg-red-50 p-3">
-                        <dt className="text-xs text-red-700">Rusak</dt>
-                        <dd className="mt-1 font-bold text-red-800">
+                      <div className="rounded-xl bg-red-50 p-2">
+                        <p className="text-xs text-red-700">Rusak</p>
+                        <p className="mt-1 font-bold text-red-800">
                           {formatNumber(work.step.quantityScrap ?? 0)}
-                        </dd>
+                        </p>
                       </div>
-                    </dl>
+                    </div>
                     {(work.inputLots?.length ?? 0) > 0 && (
                       <p className="mt-3 text-xs leading-5 text-slate-500">
                         Lot input:{' '}
                         {work.inputLots
                           .filter((lot) => lot.availableQuantity > 0)
                           .map(
-                            (lot) =>
-                              `${lot.lotCode} (${formatNumber(lot.availableQuantity)})`,
+                            (lot, index) =>
+                              `Lot ${index + 1} (${formatNumber(lot.availableQuantity)}pcs)`,
                           )
                           .join(', ') || 'Tidak ada stok tersisa'}
                       </p>
                     )}
-                    <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-                      {tab === 'mine' && canRecordResult && (
-                        <button
-                          type="button"
-                          disabled={Boolean(busyKey)}
-                          onClick={() => openResult(work)}
-                          className={`${primaryButtonClass} bg-blue-600 hover:bg-blue-700 focus-visible:ring-blue-500/20`}
-                        >
-                          Catat hasil
-                        </button>
-                      )}
-                      {tab === 'mine' &&
-                        work.step.status !== 'cancelled' &&
-                        (work.outputLots ?? []).some(
-                          (lot) => lot.availableQuantity > 0,
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {work.step.ownerOperator == null &&
+                        !['completed', 'cancelled'].includes(
+                          work.step.status,
                         ) && (
                           <button
                             type="button"
                             disabled={Boolean(busyKey)}
-                            onClick={() => openTransfer(work)}
-                            className={secondaryButtonClass}
+                            onClick={() => {
+                              setClaimModalOrderId(work.order._id);
+                              setClaimModalTransferId(null);
+                              setSelectedAvailableKeys([]);
+                              setSelectedTransferProcessIds([]);
+                              setError('');
+                              setNotice('');
+                            }}
+                            className={primaryButtonClass}
                           >
-                            Transfer ke proses berikutnya
+                            Kerjakan
                           </button>
                         )}
-                      {tab === 'mine' &&
+                      {work.step.ownerOperator != null &&
+                        (canRecordResult || allInputLotsRecorded) && (
+                          <button
+                            type="button"
+                            disabled={Boolean(busyKey) || allInputLotsRecorded}
+                            onClick={() => openResult(work)}
+                            className={`${primaryButtonClass} min-h-9 px-3 py-2 bg-blue-600 hover:bg-blue-700 focus-visible:ring-blue-500/20`}
+                          >
+                            {allInputLotsRecorded
+                              ? 'Semua tercatat'
+                              : 'Catat hasil'}
+                          </button>
+                        )}
+                      {work.step.ownerOperator != null &&
+                        work.step.status !== 'cancelled' &&
+                        (hasTransferableOutput ||
+                          allOutputLotsSent ||
+                          finalStepOwned) && (
+                          <button
+                            type="button"
+                            disabled={
+                              Boolean(busyKey) ||
+                              finalStepOwned ||
+                              allOutputLotsSent
+                            }
+                            onClick={() => {
+                              if (
+                                selectedWork?.order._id === work.order._id &&
+                                selectedWork?.step._id === work.step._id &&
+                                formMode === 'transfer'
+                              ) {
+                                setSelectedWork(null);
+                                setFormMode(null);
+                              } else {
+                                openTransfer(work);
+                              }
+                            }}
+                            className={secondaryButtonClass}
+                          >
+                            {finalStepFinished
+                              ? 'Proses selesai'
+                              : finalStepOwned
+                                ? 'Proses akhir'
+                                : allOutputLotsSent
+                                  ? 'Terkirim'
+                                  : selectedWork?.order._id === work.order._id &&
+                                      selectedWork?.step._id === work.step._id &&
+                                      formMode === 'transfer'
+                                    ? 'Tutup Kirim Ke'
+                                    : 'Kirim Ke'}
+                          </button>
+                        )}
+                      {work.step.ownerOperator != null &&
                         ['in_progress', 'partially_completed'].includes(
                           work.step.status,
                         ) &&
@@ -1166,42 +1158,13 @@ export default function OperatorPage() {
                               : 'Selesaikan proses'}
                           </button>
                         )}
-                      {tab === 'mine' &&
+                      {work.step.ownerOperator != null &&
                         work.step.status === 'completed' &&
                         !hasRemainingInput && (
                           <span className="inline-flex min-h-11 items-center rounded-xl bg-emerald-50 px-4 text-sm font-semibold text-emerald-700">
                             Proses selesai
                           </span>
                         )}
-                      {tab === 'mine' && work.step.status !== 'cancelled' && (
-                        <button
-                          type="button"
-                          disabled={
-                            Boolean(busyKey) ||
-                            work.order.status === 'completed' ||
-                            (work.step.status === 'completed' &&
-                              hasRemainingInput) ||
-                            !(work.order.steps ?? []).length ||
-                            !(work.order.steps ?? []).every((step) =>
-                              ['completed', 'cancelled'].includes(step.status),
-                            )
-                          }
-                          onClick={() => void handleCompleteProduction(work)}
-                          className={`${secondaryButtonClass} border-emerald-200 text-emerald-800 hover:bg-emerald-50`}
-                          title={
-                            work.order.status === 'completed'
-                              ? 'Production Order sudah selesai'
-                              : 'Aktif setelah semua proses selesai atau dibatalkan'
-                          }
-                        >
-                          {work.order.status === 'completed'
-                            ? 'Produksi selesai'
-                            : busyKey ===
-                                `complete-production:${work.order._id}`
-                              ? 'Menyelesaikan produksi...'
-                              : 'Selesai produksi'}
-                        </button>
-                      )}
                     </div>
                   </article>
                 );
@@ -1210,34 +1173,238 @@ export default function OperatorPage() {
           )}
         </section>
 
-        {selectedWork && formMode === 'result' && (
-          <section className="scroll-mt-4 rounded-2xl border border-blue-200 bg-white p-4 shadow-sm sm:p-6">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-xs font-bold uppercase tracking-[0.15em] text-blue-700">
-                  Pencatatan hasil produksi
-                </p>
-                <h2 className="mt-1 break-words text-xl font-extrabold text-slate-900">
-                  {selectedWork.order.orderNumber}
-                </h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  {processName(selectedWork.step)}
-                </p>
+        {claimModalOrderId && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4"
+            onClick={(event) => {
+              if (event.target === event.currentTarget && !busyKey) {
+                setClaimModalOrderId(null);
+                setClaimModalTransferId(null);
+                setSelectedTransferProcessIds([]);
+                setSelectedAvailableKeys([]);
+              }
+            }}
+          >
+            <div className="max-h-[82dvh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-4 shadow-2xl">
+              <div className="mb-3 flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-extrabold text-slate-900">
+                    Pilih proses
+                  </h3>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {claimModalTransferId
+                      ? incomingTransfers.find(
+                          (item) => item.transfer._id === claimModalTransferId,
+                        )?.order.orderNumber
+                      : available.find(
+                          (work) => work.order._id === claimModalOrderId,
+                        )?.order.orderNumber}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={Boolean(busyKey)}
+                  onClick={() => {
+                    setClaimModalOrderId(null);
+                    setClaimModalTransferId(null);
+                    setSelectedTransferProcessIds([]);
+                    setSelectedAvailableKeys([]);
+                  }}
+                  className="rounded-lg px-3 py-1 text-xl text-slate-500 hover:bg-slate-100"
+                  aria-label="Tutup modal"
+                >
+                  ×
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedWork(null);
-                  setFormMode(null);
-                }}
-                className="shrink-0 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-500 hover:bg-slate-50"
-              >
-                Tutup
-              </button>
+              <div className="space-y-1">
+                {claimModalTransferId
+                  ? (
+                      incomingTransfers.find(
+                        (item) => item.transfer._id === claimModalTransferId,
+                      )?.eligibleSteps ?? []
+                    )
+                      .slice()
+                      .sort(
+                        (a, b) =>
+                          Number(a.sequence ?? 0) - Number(b.sequence ?? 0),
+                      )
+                      .map((step) => {
+                        const checked = selectedTransferProcessIds.includes(
+                          step._id,
+                        );
+                        return (
+                          <label
+                            key={step._id}
+                            className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-2 hover:bg-blue-50"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={Boolean(busyKey)}
+                              onChange={(event) =>
+                                setSelectedTransferProcessIds((current) =>
+                                  event.target.checked
+                                    ? [...current, step._id]
+                                    : current.filter((id) => id !== step._id),
+                                )
+                              }
+                              className="mt-1 size-4 shrink-0 accent-blue-700"
+                            />
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-sm font-semibold text-slate-900">
+                                #{step.sequence ?? '-'} ·{' '}
+                                {step.processName ||
+                                  step.processCode ||
+                                  step.process ||
+                                  'Proses'}
+                              </span>
+                              <span className="block text-xs text-slate-500">
+                                Transfer tersedia:{' '}
+                                {formatNumber(
+                                  incomingTransfers.find(
+                                    (item) =>
+                                      item.transfer._id ===
+                                      claimModalTransferId,
+                                  )?.transfer.quantity ?? 0,
+                                )}{' '}
+                                unit
+                              </span>
+                            </span>
+                          </label>
+                        );
+                      })
+                  : available
+                      .filter((work) => work.order._id === claimModalOrderId)
+                      .sort(
+                        (a, b) =>
+                          Number(a.step.sequence ?? 0) -
+                          Number(b.step.sequence ?? 0),
+                      )
+                      .map((work) => {
+                        const key = `${work.order._id}:${work.step._id}`;
+                        const selectable =
+                          work.step.ownerOperator == null &&
+                          work.canClaim !== false &&
+                          !['completed', 'cancelled'].includes(
+                            work.step.status,
+                          );
+                        const checked = selectedAvailableKeys.includes(key);
+                        return (
+                          <label
+                            key={key}
+                            className={`flex items-start gap-2 rounded-lg px-2 py-2 ${
+                              selectable
+                                ? 'cursor-pointer hover:bg-blue-50'
+                                : 'cursor-not-allowed bg-slate-50 opacity-60'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={!selectable || Boolean(busyKey)}
+                              onChange={(event) =>
+                                setSelectedAvailableKeys((current) =>
+                                  event.target.checked
+                                    ? [...current, key]
+                                    : current.filter((item) => item !== key),
+                                )
+                              }
+                              className="mt-1 size-4 shrink-0 accent-blue-700"
+                            />
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-sm font-semibold text-slate-900">
+                                #{work.step.sequence ?? '-'} ·{' '}
+                                {processName(work.step)}
+                              </span>
+                              <span className="block text-xs text-slate-500">
+                                {selectable
+                                  ? work.availableQuantity > 0
+                                    ? `Input tersedia: ${formatNumber(work.availableQuantity)} unit`
+                                    : 'Menunggu lot input tersedia'
+                                  : work.step.ownerOperator
+                                    ? 'Sudah diambil operator'
+                                    : statusLabel(work.step.status)}
+                              </span>
+                            </span>
+                          </label>
+                        );
+                      })}
+              </div>
+              <div className="mt-4 flex gap-2">
+                <button
+                  type="button"
+                  disabled={Boolean(busyKey)}
+                  onClick={() => {
+                    setClaimModalOrderId(null);
+                    setClaimModalTransferId(null);
+                    setSelectedTransferProcessIds([]);
+                    setSelectedAvailableKeys([]);
+                  }}
+                  className={`${secondaryButtonClass} flex-1`}
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  disabled={
+                    Boolean(busyKey) ||
+                    (claimModalTransferId
+                      ? selectedTransferProcessIds.length === 0
+                      : selectedAvailableWorks.length === 0)
+                  }
+                  onClick={() => void handleStartSelected()}
+                  className={`${primaryButtonClass} flex-1`}
+                >
+                  {busyKey === 'claim-selected-processes'
+                    ? 'Memulai...'
+                    : `Kerjakan (${claimModalTransferId ? selectedTransferProcessIds.length : selectedAvailableWorks.length})`}
+                </button>
+              </div>
             </div>
-            <form onSubmit={handleRecordResult} className="mt-5 space-y-4">
+          </div>
+        )}
+
+        {selectedWork && formMode === 'result' && (
+          <div
+            className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 p-4"
+            onClick={(event) => {
+              if (event.target === event.currentTarget && !busyKey) {
+                setSelectedWork(null);
+                setFormMode(null);
+              }
+            }}
+          >
+            <form
+              id={`result-form-${selectedWork.order._id}-${selectedWork.step._id}`}
+              onSubmit={handleRecordResult}
+              className="max-h-[88dvh] w-full max-w-md space-y-3 overflow-y-auto rounded-2xl bg-white p-4 shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="text-lg font-extrabold text-slate-900">
+                    Catat hasil
+                  </h3>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    {selectedWork.order.orderNumber} ·{' '}
+                    {processName(selectedWork.step)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={Boolean(busyKey)}
+                  onClick={() => {
+                    setSelectedWork(null);
+                    setFormMode(null);
+                  }}
+                  aria-label="Tutup modal"
+                  className="rounded-lg px-3 py-1 text-xl text-slate-500 hover:bg-slate-100 disabled:opacity-50"
+                >
+                  ×
+                </button>
+              </div>
+
               <label className={labelClass}>
-                Lot input yang diproses
+                Lot input
                 <select
                   required
                   value={resultForm.inputLotId || selectedInputLot?._id || ''}
@@ -1249,155 +1416,108 @@ export default function OperatorPage() {
                   }
                   className={fieldClass}
                 >
-                  {selectedInputLots
-                    .filter((lot) => lot.availableQuantity > 0)
-                    .map((lot) => (
-                      <option key={lot._id} value={lot._id}>
-                        {lotLabel(lot)}
-                      </option>
-                    ))}
+                  {selectedInputLots.map((lot, index) => (
+                    <option key={lot._id} value={lot._id}>
+                      {lotLabel(lot, index)}
+                    </option>
+                  ))}
                 </select>
-                <span className="mt-1 block text-xs font-normal text-slate-500">
-                  Pilih satu lot per pencatatan. Jika input berasal dari
-                  beberapa lot, catat masing-masing lot secara terpisah.
-                </span>
               </label>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                <label className={labelClass}>
-                  Jumlah diproses
-                  <input
-                    required
-                    type="number"
-                    min={1}
-                    max={selectedInputLot?.availableQuantity ?? 0}
-                    step={1}
-                    inputMode="numeric"
-                    value={resultForm.processedQuantity}
-                    onChange={(event) =>
-                      setResultForm((current) => ({
-                        ...current,
-                        processedQuantity: event.target.value,
-                      }))
-                    }
-                    placeholder="Contoh: 50"
-                    className={fieldClass}
-                  />
-                </label>
-                <label className={labelClass}>
-                  Produk baik
-                  <input
-                    required
-                    type="number"
-                    min={0}
-                    step={1}
-                    inputMode="numeric"
-                    value={resultForm.goodQuantity}
-                    onChange={(event) =>
-                      setResultForm((current) => ({
-                        ...current,
-                        goodQuantity: event.target.value,
-                      }))
-                    }
-                    placeholder="Contoh: 47"
-                    className={fieldClass}
-                  />
-                </label>
-                <label className={labelClass}>
-                  Produk rusak
-                  <input
-                    required
-                    type="number"
-                    min={0}
-                    step={1}
-                    inputMode="numeric"
-                    value={resultForm.scrapQuantity}
-                    onChange={(event) =>
-                      setResultForm((current) => ({
-                        ...current,
-                        scrapQuantity: event.target.value,
-                      }))
-                    }
-                    placeholder="Contoh: 3"
-                    className={fieldClass}
-                  />
-                </label>
-              </div>
-              <p className="text-xs leading-5 text-slate-500">
-                Jumlah baik + rusak harus sama dengan jumlah diproses. Stok lot
-                input dikurangi secara transaksional oleh backend.
-              </p>
-              <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900">
-                Gunakan <strong>Simpan hasil</strong> untuk pencatatan parsial;
-                hasil akan tersimpan dan sisa input tetap bisa diproses nanti.
-                Gunakan <strong>Selesai proses</strong> hanya saat pencatatan
-                ini menghabiskan seluruh input aktif yang tersisa. Jika masih
-                ada input, tombol penyelesaian akan tetap nonaktif.
-              </p>
-              {selectedInputLot && !canCompleteStepWithCurrentEntry && (
-                <p className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm leading-6 text-blue-900">
-                  Input aktif tersisa{' '}
-                  {formatNumber(totalAvailableInputQuantity)}
-                  unit. Untuk menyelesaikan proses, catat semua sisa input
-                  terlebih dahulu. Untuk jumlah parsial, klik Simpan hasil.
-                </p>
-              )}
-              <label className={labelClass}>
-                Catatan{' '}
-                <span className="font-normal text-slate-400">(opsional)</span>
-                <textarea
-                  rows={3}
-                  maxLength={2000}
-                  value={resultForm.notes}
-                  onChange={(event) =>
+
+              <div className="grid grid-cols-3 gap-2">
+                <QuantityControl
+                  label="Diproses"
+                  min={1}
+                  max={selectedInputLot?.availableQuantity ?? 0}
+                  value={resultForm.processedQuantity}
+                  onChange={(value) =>
                     setResultForm((current) => ({
                       ...current,
-                      notes: event.target.value,
+                      processedQuantity: value,
                     }))
                   }
-                  placeholder="Catatan hasil proses..."
-                  className={`${fieldClass} resize-y`}
+                  className="bg-slate-50"
                 />
-              </label>
-              <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+                <QuantityControl
+                  label="Baik"
+                  value={resultForm.goodQuantity}
+                  max={Number(resultForm.processedQuantity) || undefined}
+                  onChange={(value) =>
+                    setResultForm((current) => ({
+                      ...current,
+                      goodQuantity: value,
+                    }))
+                  }
+                  className="bg-emerald-50"
+                />
+                <QuantityControl
+                  label="Rusak"
+                  value={resultForm.scrapQuantity}
+                  max={Number(resultForm.processedQuantity) || undefined}
+                  onChange={(value) =>
+                    setResultForm((current) => ({
+                      ...current,
+                      scrapQuantity: value,
+                    }))
+                  }
+                  className="bg-red-50"
+                />
+              </div>
+
+              <p className="text-xs text-slate-500">
+                Total produk baik + rusak harus sama dengan jumlah diproses.
+              </p>
+
+              <div className="flex flex-wrap gap-2">
                 <button
                   type="submit"
                   name="action"
                   value="save-result"
                   disabled={Boolean(busyKey) || !selectedInputLot}
-                  className={`${secondaryButtonClass} border-blue-200 text-blue-700 hover:bg-blue-50`}
+                  className={`${primaryButtonClass} flex-1 bg-blue-700 hover:bg-blue-800 focus-visible:ring-blue-500/20`}
                 >
                   {busyKey ? 'Menyimpan...' : 'Simpan hasil'}
                 </button>
-                {selectedInputLot ? (
-                  <button
-                    type="submit"
-                    name="action"
-                    value="complete-step"
-                    disabled={
-                      Boolean(busyKey) || !canCompleteStepWithCurrentEntry
-                    }
-                    className={primaryButtonClass}
-                  >
-                    {busyKey ? 'Menyimpan...' : 'Selesai proses'}
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    disabled={
-                      Boolean(busyKey) ||
-                      Number(selectedWork.step.quantityProcessed ?? 0) <= 0 ||
-                      selectedWork.step.status === 'completed' ||
-                      selectedWork.step.status === 'cancelled'
-                    }
-                    onClick={() =>
-                      void handleCompleteStepWithoutResult(selectedWork)
-                    }
-                    className={`${primaryButtonClass} bg-emerald-600 hover:bg-emerald-700 focus-visible:ring-emerald-500/20`}
-                    title="Menandai proses selesai tanpa membuat catatan hasil baru"
-                  >
-                    {busyKey ? 'Menyelesaikan proses...' : 'Selesaikan proses'}
-                  </button>
-                )}
+                <button
+                  type="submit"
+                  name="action"
+                  value="complete-step"
+                  disabled={
+                    Boolean(busyKey) || !canCompleteStepWithCurrentEntry
+                  }
+                  className={`${secondaryButtonClass} flex-1 border-emerald-200 px-3 py-2 text-emerald-700`}
+                >
+                  Selesai proses
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {selectedWork && formMode === 'transfer' && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4"
+            onClick={(event) => {
+              if (event.target === event.currentTarget && !busyKey) {
+                setSelectedWork(null);
+                setFormMode(null);
+              }
+            }}
+          >
+            <form
+              onSubmit={handleTransfer}
+              className="max-h-[82dvh] w-full max-w-md space-y-2.5 overflow-y-auto rounded-t-2xl bg-white p-4 shadow-2xl sm:rounded-2xl"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-lg font-extrabold text-slate-900">
+                    Kirim ke
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    {selectedWork.order.orderNumber} ·{' '}
+                    {processName(selectedWork.step)}
+                  </p>
+                </div>
                 <button
                   type="button"
                   disabled={Boolean(busyKey)}
@@ -1405,89 +1525,55 @@ export default function OperatorPage() {
                     setSelectedWork(null);
                     setFormMode(null);
                   }}
-                  className={secondaryButtonClass}
+                  aria-label="Tutup modal"
+                  className="rounded-lg px-3 py-1 text-xl text-slate-500 hover:bg-slate-100 disabled:opacity-50"
                 >
-                  Batal
+                  ×
                 </button>
               </div>
-            </form>
-          </section>
-        )}
 
-        {selectedWork && formMode === 'transfer' && (
-          <section className="scroll-mt-4 rounded-2xl border border-red-200 bg-white p-4 shadow-sm sm:p-6">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-xs font-bold uppercase tracking-[0.15em] text-red-700">
-                  Transfer kuantitas ke proses berikutnya
-                </p>
-                <h2 className="mt-1 break-words text-xl font-extrabold text-slate-900">
-                  {selectedWork.order.orderNumber}
-                </h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  Dari proses: {processName(selectedWork.step)}
-                </p>
+              <div className="grid grid-cols-[minmax(0,2fr)_minmax(96px,1fr)] gap-2">
+                <label className={labelClass}>
+                  Lot sumber
+                  <select
+                    required
+                    value={
+                      transferForm.sourceLotId || selectedOutputLot?._id || ''
+                    }
+                    onChange={(event) => {
+                      const lot = selectedOutputLots.find(
+                        (item) => item._id === event.target.value,
+                      );
+                      setTransferForm((current) => ({
+                        ...current,
+                        sourceLotId: event.target.value,
+                        quantity: lot ? String(lot.availableQuantity) : '',
+                      }));
+                    }}
+                    className={`${fieldClass} min-h-9 py-1.5`}
+                  >
+                    {selectedOutputLots.map((lot, index) => (
+                      <option key={lot._id} value={lot._id}>
+                        {`Lot ${index + 1} (${formatNumber(lot.availableQuantity)}pcs)`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className={labelClass}>
+                  Jumlah dikirim
+                  <p className="mt-1.5 flex min-h-9 items-center rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-semibold text-slate-800">
+                    {formatNumber(selectedOutputLot?.availableQuantity ?? 0)}{' '}
+                    pcs
+                  </p>
+                  <span className="mt-0.5 block text-[11px] font-normal text-slate-500">
+                    Seluruh stok lot akan dikirim.
+                  </span>
+                </label>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedWork(null);
-                  setFormMode(null);
-                }}
-                className="shrink-0 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-500 hover:bg-slate-50"
-              >
-                Tutup
-              </button>
-            </div>
-            <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900">
-              Transfer hanya mengambil lot hasil baik yang sudah tercatat. Lot
-              input/bahan yang belum diproses tidak dapat ditransfer. Pilih
-              Operator penerima; operator penerima akan memilih proses tujuan
-              setelah transfer masuk. Kuantitas lot sumber langsung dikurangi
-              agar tidak dapat digunakan dua kali.
-            </p>
-            <form onSubmit={handleTransfer} className="mt-5 space-y-4">
-              <label className={labelClass}>
-                Lot sumber yang tersedia
-                <select
-                  required
-                  value={
-                    transferForm.sourceLotId || selectedOutputLot?._id || ''
-                  }
-                  onChange={(event) => {
-                    const lot = selectedOutputLots.find(
-                      (item) => item._id === event.target.value,
-                    );
-                    setTransferForm((current) => ({
-                      ...current,
-                      sourceLotId: event.target.value,
-                      quantity: lot
-                        ? String(
-                            Math.min(
-                              Number(current.quantity) || lot.availableQuantity,
-                              lot.availableQuantity,
-                            ),
-                          )
-                        : '',
-                    }));
-                  }}
-                  className={fieldClass}
-                >
-                  {selectedOutputLots.map((lot) => (
-                    <option key={lot._id} value={lot._id}>
-                      {lotLabel(lot)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="space-y-2">
+
+              <div className="space-y-1">
                 <p className={labelClass}>Operator penerima</p>
-                <p className="text-xs leading-5 text-slate-500">
-                  Pilih satu atau beberapa operator. Total kuantitas akan dibagi
-                  rata; sisa pembagian diberikan ke operator teratas dalam
-                  daftar.
-                </p>
-                <div className="space-y-2">
+                <div className="grid max-h-24 grid-cols-2 gap-x-3 gap-y-1 overflow-y-auto">
                   {operators
                     .filter((operator) => operator._id !== user?.id)
                     .map((operator) => {
@@ -1497,7 +1583,7 @@ export default function OperatorPage() {
                       return (
                         <label
                           key={operator._id}
-                          className={`flex cursor-pointer items-center gap-3 rounded-xl border p-3 transition ${checked ? 'border-blue-400 bg-blue-50' : 'border-slate-200 bg-white hover:border-blue-200'}`}
+                          className="flex min-w-0 cursor-pointer items-center gap-1.5 py-0.5"
                         >
                           <input
                             type="checkbox"
@@ -1510,11 +1596,10 @@ export default function OperatorPage() {
                                   : current.filter((id) => id !== operator._id),
                               )
                             }
-                            className="size-4 accent-blue-600"
+                            className="size-3.5 shrink-0 accent-blue-600"
                           />
-                          <span className="text-sm font-medium text-slate-800">
+                          <span className="min-w-0 break-words text-sm font-medium text-slate-800">
                             {operator.username}
-                            {operator.email ? ` · ${operator.email}` : ''}
                           </span>
                         </label>
                       );
@@ -1524,36 +1609,12 @@ export default function OperatorPage() {
                   {selectedOperatorIds.length} operator dipilih
                 </p>
               </div>
-              <label className={labelClass}>
-                Jumlah yang diserahkan
-                <input
-                  required
-                  type="number"
-                  min={1}
-                  max={selectedOutputLot?.availableQuantity ?? 0}
-                  step={1}
-                  inputMode="numeric"
-                  value={transferForm.quantity}
-                  onChange={(event) =>
-                    setTransferForm((current) => ({
-                      ...current,
-                      quantity: event.target.value,
-                    }))
-                  }
-                  placeholder="Contoh: 25"
-                  className={fieldClass}
-                />
-                <span className="mt-1 block text-xs font-normal text-slate-500">
-                  Tersedia pada lot terpilih:{' '}
-                  {formatNumber(selectedOutputLot?.availableQuantity ?? 0)}{' '}
-                  unit.
-                </span>
-              </label>
+
               <label className={labelClass}>
                 Catatan{' '}
                 <span className="font-normal text-slate-400">(opsional)</span>
                 <textarea
-                  rows={2}
+                  rows={1}
                   maxLength={2000}
                   value={transferForm.notes}
                   onChange={(event) =>
@@ -1562,11 +1623,23 @@ export default function OperatorPage() {
                       notes: event.target.value,
                     }))
                   }
-                  placeholder="Catatan transfer..."
-                  className={`${fieldClass} resize-y`}
+                  placeholder="Catatan pengiriman..."
+                  className={`${fieldClass} min-h-9 py-1.5 resize-y`}
                 />
               </label>
-              <div className="flex flex-col gap-2 sm:flex-row">
+
+              <div className="flex gap-2 pt-0.5">
+                <button
+                  type="button"
+                  disabled={Boolean(busyKey)}
+                  onClick={() => {
+                    setSelectedWork(null);
+                    setFormMode(null);
+                  }}
+                  className={`${secondaryButtonClass} flex-1`}
+                >
+                  Batal
+                </button>
                 <button
                   type="submit"
                   disabled={
@@ -1575,24 +1648,13 @@ export default function OperatorPage() {
                     selectedOperatorIds.length === 0 ||
                     Number(transferForm.quantity) < selectedOperatorIds.length
                   }
-                  className={primaryButtonClass}
+                  className={`${primaryButtonClass} flex-1`}
                 >
-                  {busyKey ? 'Mentransfer...' : 'Konfirmasi transfer'}
-                </button>
-                <button
-                  type="button"
-                  disabled={Boolean(busyKey)}
-                  onClick={() => {
-                    setSelectedWork(null);
-                    setFormMode(null);
-                  }}
-                  className={secondaryButtonClass}
-                >
-                  Batal
+                  {busyKey ? 'Mengirim...' : 'Kirim'}
                 </button>
               </div>
             </form>
-          </section>
+          </div>
         )}
       </div>
     </main>

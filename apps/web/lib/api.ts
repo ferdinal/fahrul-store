@@ -10,6 +10,9 @@ function buildApiUrl(endpoint: string): string {
   const baseUrl = API_URL.replace(/\/+$/, '');
   const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
 
+  console.log('API', API_URL);
+  console.log('BASE', baseUrl + path);
+
   // Jika base URL adalah /api, hindari prefix /api ganda.
   if (baseUrl === '/api' && (path === '/api' || path.startsWith('/api/'))) {
     return `${baseUrl}${path.slice(4)}`;

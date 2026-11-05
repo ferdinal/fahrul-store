@@ -55,10 +55,13 @@ export type OperatorWorkItem = {
   step: OperatorStep;
   inputLots: ProductionLot[];
   outputLots?: ProductionLot[];
+  outputLotsTransferred?: boolean;
   availableQuantity: number;
   outputAvailableQuantity?: number;
   canStart?: boolean;
   blockedReason?: string;
+  canClaim?: boolean;
+  showInNew?: boolean;
 };
 
 export type IncomingTransfer = {

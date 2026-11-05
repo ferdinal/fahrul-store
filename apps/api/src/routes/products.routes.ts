@@ -56,6 +56,7 @@ const productWorkflowSchema = z.object({
  *
  * Accessible by:
  * - admin
+ * - admin-produksi
  * - user / reseller
  * =========================================================
  */
@@ -68,7 +69,11 @@ router.get('/', authenticate, async (req: AuthRequest, res) => {
       });
     }
 
-    if (req.user.role !== 'admin' && req.user.role !== 'user') {
+    if (
+      req.user.role !== 'admin' &&
+      req.user.role !== 'admin-produksi' &&
+      req.user.role !== 'user'
+    ) {
       return res.status(403).json({
         success: false,
         message: 'Access denied.',

@@ -40,6 +40,10 @@ const productionBatchSchema = z.object({
 });
 
 const productionBatchFromRequirementsSchema = z.object({
+  // Hanya dipakai tombol Kerjakan di Admin Produksi.
+  // Endpoint pembuatan order biasa tetap membuat order berstatus planned.
+  startFirstStep: z.boolean().optional().default(false),
+
   plannedStartDate: z.string().optional().nullable(),
 
   plannedEndDate: z.string().optional().nullable(),
@@ -248,7 +252,20 @@ router.post(
       });
     }
 
-    const { plannedStartDate, plannedEndDate, notes, items } = result.data;
+    const { plannedStartDate, plannedEndDate, notes, items, startFirstStep } =
+      result.data;
+    const authReq = req as AuthRequest;
+    const startedBy = authReq.user?.userId;
+
+    if (
+      startFirstStep &&
+      (!startedBy || !mongoose.isValidObjectId(startedBy))
+    ) {
+      return res.status(401).json({
+        success: false,
+        message: 'Akun Admin Produksi tidak valid untuk memulai proses.',
+      });
+    }
 
     // Validasi ID produk sebelum memulai transaction.
     for (const item of items) {
@@ -356,6 +373,32 @@ router.post(
            * dependensi melingkar, dan inisialisasi hasil step.
            */
           const steps = buildProductionSteps(productData.workflow ?? []);
+          let orderStatus: 'planned' | 'in_progress' = 'planned';
+
+          // Admin Produksi juga menjadi operator untuk proses pertama.
+          // Proses berikutnya tetap planned dan belum dimiliki siapa pun.
+          if (startFirstStep) {
+            const firstStep = [...steps].sort(
+              (a, b) => Number(a.sequence ?? 0) - Number(b.sequence ?? 0),
+            )[0] as
+              | ((typeof steps)[number] & Record<string, unknown>)
+              | undefined;
+
+            if (!firstStep) {
+              throw new Error(
+                `Product ${productData.name} belum memiliki workflow produksi.`,
+              );
+            }
+
+            const now = new Date();
+            Object.assign(firstStep, {
+              status: 'in_progress',
+              ownerOperator: new mongoose.Types.ObjectId(startedBy!),
+              claimedAt: now,
+              startedAt: now,
+            });
+            orderStatus = 'in_progress';
+          }
 
           /**
            * 3. Generate Production Order number.
@@ -372,7 +415,8 @@ router.post(
                 batch: batch._id,
                 product: productData._id,
                 quantity: item.quantity,
-                status: 'planned',
+                status: orderStatus,
+                ...(startFirstStep ? { startedAt: new Date() } : {}),
 
                 // Hasil akhir belum dihitung.
                 finalGoodQuantity: 0,
