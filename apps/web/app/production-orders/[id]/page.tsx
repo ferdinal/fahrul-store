@@ -17,7 +17,12 @@ interface ProductionOrderDetailPageProps {
 }
 
 function formatStatus(
-  status: 'planned' | 'in_progress' | 'completed' | 'cancelled',
+  status:
+    | 'planned'
+    | 'in_progress'
+    | 'partially_completed'
+    | 'completed'
+    | 'cancelled',
 ) {
   switch (status) {
     case 'planned':
@@ -25,6 +30,9 @@ function formatStatus(
 
     case 'in_progress':
       return 'In Progress';
+
+    case 'partially_completed':
+      return 'Partially Completed';
 
     case 'completed':
       return 'Completed';
@@ -38,13 +46,19 @@ function formatStatus(
 }
 
 function getStatusClass(
-  status: 'planned' | 'in_progress' | 'completed' | 'cancelled',
+  status:
+    | 'planned'
+    | 'in_progress'
+    | 'partially_completed'
+    | 'completed'
+    | 'cancelled',
 ) {
   switch (status) {
     case 'planned':
       return 'border-blue-800/50 bg-blue-950/40 text-blue-300';
 
     case 'in_progress':
+    case 'partially_completed':
       return 'border-yellow-800/50 bg-yellow-950/40 text-yellow-300';
 
     case 'completed':
