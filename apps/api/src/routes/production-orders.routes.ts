@@ -191,8 +191,6 @@ async function finalizeSingleStepOrderIfReady(
       sum + Number(lot.availableQuantity ?? 0),
     0,
   );
-  if (finalGoodQuantity < Number(order.quantity ?? 0)) return false;
-
   const finalMovementKey = `production-order-final:${String(order._id)}`;
   const existingFinalMovement = await StockMovementModel.findOne({
     idempotencyKey: finalMovementKey,
@@ -236,7 +234,10 @@ async function finalizeSingleStepOrderIfReady(
   }
 
   order.finalGoodQuantity = finalGoodQuantity;
-  order.shortfallQuantity = 0;
+  order.shortfallQuantity = Math.max(
+    0,
+    Number(order.quantity ?? 0) - finalGoodQuantity,
+  );
   order.status = 'completed';
   order.completedAt = new Date();
   await order.save({ session });
@@ -1256,13 +1257,6 @@ router.post(
             sum + Number(lot.availableQuantity ?? 0),
           0,
         );
-        const targetQuantity = Number(order.quantity ?? 0);
-        if (finalGoodQuantity < targetQuantity) {
-          throw httpError(
-            409,
-            `Produksi belum dapat diselesaikan: jumlah barang baik ${finalGoodQuantity} dari target ${targetQuantity}. Lanjutkan produksi sampai target terpenuhi.`,
-          );
-        }
         // Idempotensi inventori ditentukan oleh StockMovement, bukan oleh
         // order.finalGoodQuantity. Field kuantitas akhir adalah hasil produksi,
         // bukan penanda bahwa inventori sudah pernah ditambah.
@@ -1310,7 +1304,10 @@ router.post(
         }
 
         order.finalGoodQuantity = finalGoodQuantity;
-        order.shortfallQuantity = 0;
+        order.shortfallQuantity = Math.max(
+          0,
+          Number(order.quantity ?? 0) - finalGoodQuantity,
+        );
         order.status = 'completed';
         order.completedAt = new Date();
         await order.save({ session });

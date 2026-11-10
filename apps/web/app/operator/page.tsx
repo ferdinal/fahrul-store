@@ -113,7 +113,7 @@ function statusClass(status: string) {
   return 'border-blue-200 bg-blue-50 text-blue-700';
 }
 function lotLabel(lot: ProductionLot, index: number) {
-  return `Lot ${index + 1} (${formatNumber(lot.availableQuantity)}pcs)`;
+  return `Slot-${index + 1} (${formatNumber(lot.availableQuantity)}pcs)`;
 }
 function Notice({
   type,
@@ -410,58 +410,68 @@ export default function OperatorPage() {
       completed,
     };
   }, [currentList, user?.id]);
-  const filteredList = useMemo(
-    () => {
-      const matchesFilter = (work: DisplayWorkItem) => {
-        const hasRemainingInput = (work.inputLots ?? []).some(
-          (lot) => lot.availableQuantity > 0,
-        );
-        const isCompleted =
-          work.step.status === 'completed' && !hasRemainingInput;
-        const ownedByCurrentOperator =
-          String(work.step.ownerOperator ?? '') === user?.id;
-        const isNew =
-          work.step.ownerOperator == null &&
-          work.showInNew !== false &&
-          !['completed', 'cancelled'].includes(work.step.status);
-        if (workFilter === 'new') return isNew;
-        if (workFilter === 'working')
-          return (
-            ownedByCurrentOperator &&
-            !isCompleted &&
-            work.step.status !== 'cancelled'
-          );
-        if (workFilter === 'completed')
-          return ownedByCurrentOperator && isCompleted;
+  const filteredList = useMemo(() => {
+    const matchesFilter = (work: DisplayWorkItem) => {
+      const hasRemainingInput = (work.inputLots ?? []).some(
+        (lot) => lot.availableQuantity > 0,
+      );
+      const isCompleted =
+        work.step.status === 'completed' && !hasRemainingInput;
+      const ownedByCurrentOperator =
+        String(work.step.ownerOperator ?? '') === user?.id;
+      const isNew =
+        work.step.ownerOperator == null &&
+        work.showInNew !== false &&
+        !['completed', 'cancelled'].includes(work.step.status);
+      if (workFilter === 'new') return isNew;
+      if (workFilter === 'working')
         return (
-          work.step.status !== 'cancelled' &&
-          ((work.step.ownerOperator == null && work.showInNew !== false) ||
-            ownedByCurrentOperator)
+          ownedByCurrentOperator &&
+          !isCompleted &&
+          work.step.status !== 'cancelled'
         );
-      };
+      if (workFilter === 'completed')
+        return ownedByCurrentOperator && isCompleted;
+      return (
+        work.step.status !== 'cancelled' &&
+        ((work.step.ownerOperator == null && work.showInNew !== false) ||
+          ownedByCurrentOperator)
+      );
+    };
 
-      const matching = currentList.filter(matchesFilter);
-      // Ringkas semua proses yang belum diklaim menjadi satu kartu per PO
-      // dan produk. Proses yang sudah diklaim tetap tampil satu kartu per step.
-      const seenUnclaimedOrders = new Set<string>();
-      return matching.filter((work) => {
-        const isUnclaimed =
-          work.step.ownerOperator == null &&
-          !['completed', 'cancelled'].includes(work.step.status);
-        if (!isUnclaimed) return true;
+    const matching = currentList.filter(matchesFilter);
+    // Ringkas semua proses yang belum diklaim menjadi satu kartu per PO
+    // dan produk. Proses yang sudah diklaim tetap tampil satu kartu per step.
+    const seenUnclaimedOrders = new Set<string>();
+    const deduplicated = matching.filter((work) => {
+      const isUnclaimed =
+        work.step.ownerOperator == null &&
+        !['completed', 'cancelled'].includes(work.step.status);
+      if (!isUnclaimed) return true;
 
-        const productId =
-          typeof work.order.product === 'string'
-            ? work.order.product
-            : work.order.product?._id ?? productName(work);
-        const key = `${work.order._id}:${productId}`;
-        if (seenUnclaimedOrders.has(key)) return false;
-        seenUnclaimedOrders.add(key);
-        return true;
-      });
-    },
-    [currentList, user?.id, workFilter],
-  );
+      const productId =
+        typeof work.order.product === 'string'
+          ? work.order.product
+          : (work.order.product?._id ?? productName(work));
+      const key = `${work.order._id}:${productId}`;
+      if (seenUnclaimedOrders.has(key)) return false;
+      seenUnclaimedOrders.add(key);
+      return true;
+    });
+    if (workFilter !== 'all') return deduplicated;
+
+    return deduplicated.sort((a, b) => {
+      const aIsNew =
+        a.step.ownerOperator == null &&
+        a.showInNew !== false &&
+        !['completed', 'cancelled'].includes(a.step.status);
+      const bIsNew =
+        b.step.ownerOperator == null &&
+        b.showInNew !== false &&
+        !['completed', 'cancelled'].includes(b.step.status);
+      return Number(bIsNew) - Number(aIsNew);
+    });
+  }, [currentList, user?.id, workFilter]);
   const selectedAvailableWorks = available.filter(
     (work) =>
       work.order._id === claimModalOrderId &&
@@ -718,7 +728,9 @@ export default function OperatorPage() {
         await completeProductionOrder(work.order._id, work.step._id);
         productionCompleted = true;
       }
-      setNotice(`Proses ${processName(work.step)} selesai. Tidak ada hasil atau lot baru yang dibuat.${productionCompleted ? ' Produksi juga selesai dan jumlah barang jadi aktual sudah dimasukkan ke inventori.' : ''}`);
+      setNotice(
+        `Proses ${processName(work.step)} selesai. Tidak ada hasil atau lot baru yang dibuat.${productionCompleted ? ' Produksi juga selesai dan jumlah barang jadi aktual sudah dimasukkan ke inventori.' : ''}`,
+      );
       setSelectedWork(null);
       setFormMode(null);
       await loadWork(true);
@@ -995,20 +1007,20 @@ export default function OperatorPage() {
                       </span>
                     </div>
                     <div className="mt-2 rounded-xl bg-slate-100/80 px-3 py-2">
-                      <p className="text-xs font-bold uppercase tracking-wide text-blue-700">
+                      {/* <p className="text-xs font-bold uppercase tracking-wide text-blue-700">
                         Proses produksi
                         {work.step.ownerOperator == null && !work.incomingTransfer
                           ? ` · ${availableProcessCount} proses tersedia`
                           : ` · Urutan ${work.step.sequence ?? '-'}`}
-                      </p>
-                      <p className="mt-1 font-bold text-slate-900">
+                      </p> */}
+                      {/* <p className="mt-1 font-bold text-slate-900">
                         {processName(work.step)}
-                      </p>
-                      <div className="mt-2 grid grid-cols-2 gap-2 border-t border-blue-100 pt-2 text-xs">
+                      </p> */}
+                      <div className="mt-2 grid grid-cols-2 gap-2 pt-2 text-xs">
                         <div>
-                          <p className="text-slate-500">Jumlah order</p>
+                          <p className="text-slate-500">Jumlah Dikirim</p>
                           <p className="mt-1 font-bold text-slate-900">
-                            {formatNumber(work.order.quantity)} unit
+                            {formatNumber(work.availableQuantity)} unit
                           </p>
                         </div>
                         <div>
@@ -1032,7 +1044,7 @@ export default function OperatorPage() {
                         proses tersedia untuk dipilih
                       </p>
                     )}
-                    <div className="mt-2 grid grid-cols-3 gap-1.5">
+                    {/* <div className="mt-2 grid grid-cols-3 gap-1.5">
                       <div className="rounded-xl bg-slate-50 p-2">
                         <p className="text-xs text-slate-500">Diproses</p>
                         <p className="mt-1 font-bold text-slate-900">
@@ -1051,19 +1063,19 @@ export default function OperatorPage() {
                           {formatNumber(work.step.quantityScrap ?? 0)}
                         </p>
                       </div>
-                    </div>
-                    {(work.inputLots?.length ?? 0) > 0 && (
+                    </div> */}
+                    {/* {(work.inputLots?.length ?? 0) > 0 && (
                       <p className="mt-3 text-xs leading-5 text-slate-500">
                         Lot input:{' '}
                         {work.inputLots
                           .filter((lot) => lot.availableQuantity > 0)
                           .map(
                             (lot, index) =>
-                              `Lot ${index + 1} (${formatNumber(lot.availableQuantity)}pcs)`,
+                              lotLabel(lot, index),
                           )
                           .join(', ') || 'Tidak ada stok tersisa'}
                       </p>
-                    )}
+                    )} */}
                     <div className="mt-3 flex flex-wrap gap-2">
                       {work.step.ownerOperator == null &&
                         !['completed', 'cancelled'].includes(
@@ -1130,8 +1142,10 @@ export default function OperatorPage() {
                                 ? 'Proses akhir'
                                 : allOutputLotsSent
                                   ? 'Terkirim'
-                                  : selectedWork?.order._id === work.order._id &&
-                                      selectedWork?.step._id === work.step._id &&
+                                  : selectedWork?.order._id ===
+                                        work.order._id &&
+                                      selectedWork?.step._id ===
+                                        work.step._id &&
                                       formMode === 'transfer'
                                     ? 'Tutup Kirim Ke'
                                     : 'Kirim Ke'}
@@ -1554,7 +1568,7 @@ export default function OperatorPage() {
                   >
                     {selectedOutputLots.map((lot, index) => (
                       <option key={lot._id} value={lot._id}>
-                        {`Lot ${index + 1} (${formatNumber(lot.availableQuantity)}pcs)`}
+                        {lotLabel(lot, index)}
                       </option>
                     ))}
                   </select>

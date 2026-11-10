@@ -13,6 +13,7 @@ import {
   deleteProductionOrder,
   getProductionOrders,
   type CreateProductionOrderInput,
+  type ProductionOrder,
 } from '@/lib/api/productionOrders';
 
 import { getProductionBatches } from '@/lib/api/productionBatches';
@@ -41,7 +42,12 @@ const statusOptions = [
 ] as const;
 
 function formatStatus(
-  status: 'planned' | 'in_progress' | 'completed' | 'cancelled',
+  status:
+    | 'planned'
+    | 'in_progress'
+    | 'partially_completed'
+    | 'completed'
+    | 'cancelled',
 ) {
   switch (status) {
     case 'planned':
@@ -49,6 +55,9 @@ function formatStatus(
 
     case 'in_progress':
       return 'In Progress';
+
+    case 'partially_completed':
+      return 'Partially Completed';
 
     case 'completed':
       return 'Completed';
@@ -62,13 +71,19 @@ function formatStatus(
 }
 
 function getStatusClass(
-  status: 'planned' | 'in_progress' | 'completed' | 'cancelled',
+  status:
+    | 'planned'
+    | 'in_progress'
+    | 'partially_completed'
+    | 'completed'
+    | 'cancelled',
 ) {
   switch (status) {
     case 'planned':
       return 'border-blue-800/50 bg-blue-950/40 text-blue-300';
 
     case 'in_progress':
+    case 'partially_completed':
       return 'border-yellow-800/50 bg-yellow-950/40 text-yellow-300';
 
     case 'completed':
@@ -121,7 +136,12 @@ function getOrderProgress(order: {
   quantity: number;
   steps?: Array<{
     sequence: number;
-    status: 'planned' | 'in_progress' | 'completed' | 'cancelled';
+    status:
+      | 'planned'
+      | 'in_progress'
+      | 'partially_completed'
+      | 'completed'
+      | 'cancelled';
     quantityProcessed?: number;
   }>;
   status: 'planned' | 'in_progress' | 'completed' | 'cancelled';
@@ -142,6 +162,21 @@ function getOrderProgress(order: {
   }, 0);
 
   return Math.min(100, Math.round((totalProgress / steps.length) * 100));
+}
+
+function getActiveSteps(order: ProductionOrder) {
+  return (order.steps ?? [])
+    .filter((step) =>
+      ['in_progress', 'partially_completed'].includes(step.status),
+    )
+    .sort((a, b) => a.sequence - b.sequence);
+}
+
+function getDisplayedSteps(order: ProductionOrder) {
+  if (order.status === 'completed') {
+    return (order.steps ?? []).slice().sort((a, b) => a.sequence - b.sequence);
+  }
+  return getActiveSteps(order);
 }
 
 export default function ProductionOrdersPage() {
@@ -929,44 +964,23 @@ export default function ProductionOrdersPage() {
                           </span>
                         </td>
 
-                        {/* Production Steps: read-only status from backend/operator activity */}
+                        {/* PO selesai menampilkan semua proses; PO lain hanya proses aktif */}
                         <td className="px-6 py-5 align-top">
-                          {!order.steps || order.steps.length === 0 ? (
+                          {getDisplayedSteps(order).length === 0 ? (
                             <span className="text-xs text-gray-600">
-                              No steps
+                              Tidak ada proses aktif
                             </span>
                           ) : (
-                            <div className="min-w-[220px] space-y-2">
-                              {order.steps
-                                .slice()
-                                .sort((a, b) => a.sequence - b.sequence)
-                                .map((step) => (
-                                  <div
-                                    key={step._id}
-                                    className="flex items-center justify-between gap-3 rounded-lg border border-blue-900/30 bg-[#070b1a] p-3"
-                                  >
-                                    <div className="flex min-w-0 items-center gap-2">
-                                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-blue-600/20 text-xs text-blue-300">
-                                        {step.sequence}
-                                      </span>
-                                      <div className="min-w-0">
-                                        <p className="truncate text-sm font-medium text-white">
-                                          {step.processName ||
-                                            `Proses ${step.sequence}`}
-                                        </p>
-                                        <p className="text-xs text-gray-500">
-                                          {step.processCode || '-'}
-                                        </p>
-                                      </div>
-                                    </div>
-                                    <span
-                                      className={`inline-flex shrink-0 rounded-full border px-2 py-1 text-[11px] ${getStatusClass(step.status)}`}
-                                    >
-                                      {formatStatus(step.status)}
-                                    </span>
-                                  </div>
-                                ))}
-                            </div>
+                            <p className="min-w-[180px] text-sm font-medium text-white">
+                              {getDisplayedSteps(order)
+                                .map(
+                                  (step) =>
+                                    step.processName ||
+                                    step.processCode ||
+                                    `Proses ${step.sequence}`,
+                                )
+                                .join(', ')}
+                            </p>
                           )}
                         </td>
 

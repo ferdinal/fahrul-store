@@ -59,7 +59,19 @@ export interface ProductionStep {
   processName: string;
   processCode: string;
   sequence: number;
-  status: 'planned' | 'in_progress' | 'completed' | 'cancelled';
+  status:
+    | 'planned'
+    | 'in_progress'
+    | 'partially_completed'
+    | 'completed'
+    | 'cancelled';
+  ownerOperator?:
+    | string
+    | {
+        _id: string;
+        username: string;
+      }
+    | null;
   startedAt: string | null;
   completedAt: string | null;
   notes: string;

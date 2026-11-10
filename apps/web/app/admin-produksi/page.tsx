@@ -199,7 +199,9 @@ function OperatorStyleOrderCard({
   const selectedStep = steps.find((step) => step._id === activeStepId) ?? null;
   const allStepsTerminal =
     workflowSteps.length > 0 &&
-    workflowSteps.every((step) => ['completed', 'cancelled'].includes(step.status));
+    workflowSteps.every((step) =>
+      ['completed', 'cancelled'].includes(step.status),
+    );
   const hasCompletedStep = workflowSteps.some(
     (step) => step.status === 'completed',
   );
@@ -548,9 +550,7 @@ function OperatorStyleOrderCard({
           hasRemainingInput,
         );
         const allInputLotsRecorded = Boolean(
-          step &&
-          !hasRemainingInput &&
-          Number(step.quantityProcessed ?? 0) > 0,
+          step && !hasRemainingInput && Number(step.quantityProcessed ?? 0) > 0,
         );
         const currentStepId = step?._id;
         const isLastWorkflowStep = Boolean(
@@ -613,11 +613,11 @@ function OperatorStyleOrderCard({
                   step?.ownerOperator == null && displayStatus !== 'completed'
                     ? 'bg-yellow-400 text-slate-900'
                     : displayStatus === 'completed'
-                    ? 'bg-green-500 text-white'
-                    : displayStatus === 'in_progress' ||
-                        displayStatus === 'partially_completed'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-yellow-400 text-slate-900'
+                      ? 'bg-green-500 text-white'
+                      : displayStatus === 'in_progress' ||
+                          displayStatus === 'partially_completed'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-yellow-400 text-slate-900'
                 }`}
               >
                 {step?.ownerOperator == null && displayStatus !== 'completed'
@@ -627,13 +627,13 @@ function OperatorStyleOrderCard({
             </div>
 
             <div className="mt-2 rounded-xl bg-slate-100/80 px-3 py-2">
-              <p className="text-xs font-bold uppercase tracking-wide text-blue-700">
+              {/* <p className="text-xs font-bold uppercase tracking-wide text-blue-700">
                 Proses produksi · Urutan {step?.sequence ?? '-'}
               </p>
               <p className="mt-1 font-bold text-slate-900">
                 {step ? stepTitle(step) : 'Menunggu detail proses'}
-              </p>
-              <div className="mt-2 grid grid-cols-2 gap-2 border-t border-blue-100 pt-2 text-xs">
+              </p> */}
+              <div className="mt-2 grid grid-cols-2 gap-2 pt-2 text-xs">
                 <div>
                   <p className="text-slate-500">Jumlah order</p>
                   <p className="mt-1 font-bold text-slate-900">
@@ -649,7 +649,7 @@ function OperatorStyleOrderCard({
               </div>
             </div>
 
-            <div className="mt-2 grid grid-cols-3 gap-1.5">
+            {/* <div className="mt-2 grid grid-cols-3 gap-1.5">
               <div className="rounded-xl bg-slate-50 p-2">
                 <p className="text-xs text-slate-500">Diproses</p>
                 <p className="mt-1 font-bold text-slate-900">
@@ -668,19 +668,19 @@ function OperatorStyleOrderCard({
                   {formatNumber(step?.quantityScrap ?? 0)}
                 </p>
               </div>
-            </div>
+            </div> */}
 
-            {step && (
+            {/* {step && (
               <p className="mt-3 text-xs leading-5 text-slate-500">
                 Lot input:{' '}
                 {inputLots
                   .map(
                     (lot, lotIndex) =>
-                      `${lot.lotCode || `Lot ${lotIndex + 1}`} (${formatNumber(lot.availableQuantity)}pcs)`,
+                      `Slot-${lotIndex + 1} (${formatNumber(lot.availableQuantity)}pcs)`,
                   )
                   .join(', ') || 'Tidak ada stok tersisa'}
               </p>
-            )}
+            )} */}
 
             <div className="mt-3 flex flex-wrap gap-2">
               {(canRecord || allInputLotsRecorded) && (
@@ -833,7 +833,7 @@ function OperatorStyleOrderCard({
                   {selectedOutputLots.map((lot, i) => (
                     <option
                       key={lot._id}
-                    >{`Lot ${i + 1} (${formatNumber(lot.availableQuantity)}pcs)`}</option>
+                    >{`Slot-${i + 1} (${formatNumber(lot.availableQuantity)}pcs)`}</option>
                   ))}
                 </select>
               </label>
@@ -1016,8 +1016,7 @@ function OperatorStyleOrderCard({
                   >
                     {selectedInputLots.map((lot, lotIndex) => (
                       <option key={lot._id} value={lot._id}>
-                        {lot.lotCode || `Lot ${lotIndex + 1}`} · tersedia{' '}
-                        {formatNumber(lot.availableQuantity)}
+                        {`Slot-${lotIndex + 1} (${formatNumber(lot.availableQuantity)}pcs)`}
                       </option>
                     ))}
                   </select>
@@ -1285,6 +1284,11 @@ export default function AdminProduksiPlanningPage() {
   const visibleOrders = allOrders.filter(
     (order) => order.status !== 'cancelled' && matchesOrderSearch(order),
   );
+  const allTabOrders = [...visibleOrders].sort((a, b) => {
+    const aIsNew = firstProductionStep(a)?.status === 'planned';
+    const bIsNew = firstProductionStep(b)?.status === 'planned';
+    return Number(bIsNew) - Number(aIsNew);
+  });
   const plannedOrders = visibleOrders.filter(
     (order) => firstProductionStep(order)?.status === 'planned',
   );
@@ -1431,7 +1435,7 @@ export default function AdminProduksiPlanningPage() {
   );
 
   return (
-    <main className="min-h-dvh overflow-x-hidden bg-white px-2 py-4 text-slate-900 sm:px-3 sm:py-6">
+    <main className="min-h-dvh overflow-x-hidden bg-white px-3 py-4 text-slate-900 sm:px-4 sm:py-6">
       <div className="mx-auto w-full max-w-5xl space-y-6">
         <header className="relative overflow-hidden rounded-2xl bg-white px-1 py-2">
           <div className="pointer-events-none absolute -right-8 -top-10 h-28 w-64 rotate-[32deg] bg-gradient-to-r from-red-600 to-blue-800 opacity-95" />
@@ -1447,9 +1451,9 @@ export default function AdminProduksiPlanningPage() {
                 <h1 className="mt-0.5 text-sm font-bold text-[#101d3b]">
                   Production Planning
                 </h1>
-                <p className="mt-0.5 text-xs text-slate-500">
+                {/* <p className="mt-0.5 text-xs text-slate-500">
                   Mulai produksi berdasarkan kebutuhan dari Production Plan.
-                </p>
+                </p> */}
               </div>
             </div>
             <button
@@ -1483,7 +1487,7 @@ export default function AdminProduksiPlanningPage() {
               Create Order
             </Link>
           </nav>
-          <div className="mt-3 grid grid-cols-2 gap-2">
+          {/* <div className="mt-3 grid grid-cols-2 gap-2">
             <div className="rounded-xl bg-slate-50 p-2.5">
               <p className="text-[11px] text-slate-500">Jumlah produk</p>
               <p className="mt-0.5 text-lg font-extrabold">
@@ -1498,7 +1502,7 @@ export default function AdminProduksiPlanningPage() {
                 {formatNumber(totalNeed)} unit
               </p>
             </div>
-          </div>
+          </div> */}
         </header>
 
         {notice && (
@@ -1596,10 +1600,10 @@ export default function AdminProduksiPlanningPage() {
             Memuat Production Order...
           </div>
         ) : (
-          <section className="space-y-4">
-            {filter === 'all' && visibleOrders.length > 0 && (
+          <section className="flex flex-col gap-4">
+            {filter === 'all' && allTabOrders.length > 0 && (
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                {visibleOrders.map((order) => {
+                {allTabOrders.map((order) => {
                   const firstStep = firstProductionStep(order);
                   return (
                     <OperatorStyleOrderCard
@@ -1654,8 +1658,7 @@ export default function AdminProduksiPlanningPage() {
                       }
                       productFallback={
                         requirements.find(
-                          (item) =>
-                            item.product._id === orderProductId(order),
+                          (item) => item.product._id === orderProductId(order),
                         )?.product
                       }
                       onRefresh={() => ordersQuery.refetch()}
@@ -1678,8 +1681,7 @@ export default function AdminProduksiPlanningPage() {
                       }
                       productFallback={
                         requirements.find(
-                          (item) =>
-                            item.product._id === orderProductId(order),
+                          (item) => item.product._id === orderProductId(order),
                         )?.product
                       }
                       onRefresh={() => ordersQuery.refetch()}
@@ -1690,7 +1692,9 @@ export default function AdminProduksiPlanningPage() {
             )}
             {(filter === 'all' || filter === 'new') &&
               newProductRequirements.length > 0 && (
-                <section className="space-y-2">
+                <section
+                  className={`${filter === 'all' ? 'order-first' : ''} space-y-2`}
+                >
                   {newProductRequirements.map((item) => {
                     const product = item.product;
                     const need = Math.max(0, Number(item.productionNeed) || 0);
@@ -1704,7 +1708,7 @@ export default function AdminProduksiPlanningPage() {
                             <h2 className="break-words text-lg font-extrabold text-slate-900">
                               {product.name}
                             </h2>
-                            {(product.version || product.body) && (
+                            {/* {(product.version || product.body) && (
                               <p className="mt-1 text-xs text-slate-500">
                                 {[
                                   product.version
@@ -1715,7 +1719,7 @@ export default function AdminProduksiPlanningPage() {
                                   .filter(Boolean)
                                   .join(' · ')}
                               </p>
-                            )}
+                            )} */}
                             <p className="mt-2 text-sm font-semibold text-red-700">
                               Kebutuhan produksi: {formatNumber(need)} unit
                             </p>

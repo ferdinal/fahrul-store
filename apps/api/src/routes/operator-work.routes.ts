@@ -26,22 +26,23 @@ const router: ExpressRouter = Router();
 router.use(authenticate);
 
 // Operator tetap memiliki akses penuh ke seluruh endpoint Operator.
-// Admin Produksi hanya diberi akses untuk melihat daftar Operator dan
-// membuat transfer dari halaman Admin Produksi.
+// Admin dan Admin Produksi hanya diberi akses untuk melihat daftar Operator
+// dan membuat transfer dari halaman Admin Produksi.
 router.use((req: AuthRequest, res, next) => {
   const role = req.user?.role;
+  const isProductionAdmin = role === 'admin' || role === 'admin-produksi';
 
   if (role === 'operator') {
     return next();
   }
 
   const isAdminOperatorLookup =
-    role === 'admin-produksi' &&
+    isProductionAdmin &&
     req.method === 'GET' &&
     req.path.replace(/\/$/, '') === '/operators';
 
   const isAdminTransfer =
-    role === 'admin-produksi' &&
+    isProductionAdmin &&
     req.method === 'POST' &&
     /^\/orders\/[^/]+\/steps\/[^/]+\/assignments\/?$/.test(req.path);
 

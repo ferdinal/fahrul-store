@@ -136,10 +136,7 @@ export default function CreateProductionOrderPage() {
 
   const allProductRequirements = useMemo(() => {
     const requirementsByProduct = new Map(
-      requirements.map((requirement) => [
-        requirement.product._id,
-        requirement,
-      ]),
+      requirements.map((requirement) => [requirement.product._id, requirement]),
     );
 
     return products.map((product) => {
@@ -182,29 +179,27 @@ export default function CreateProductionOrderPage() {
   const filteredRequirements = useMemo(() => {
     const keyword = search.trim().toLocaleLowerCase('id-ID');
 
-    return allProductRequirements.filter(
-      (requirement) => {
-        if (!requirement?.product?._id) {
-          return false;
-        }
+    return allProductRequirements.filter((requirement) => {
+      if (!requirement?.product?._id) {
+        return false;
+      }
 
-        const product = requirement.product;
+      const product = requirement.product;
 
-        const searchableText = [
-          product.name,
-          product.version,
-          product.body,
-          product._id,
-        ]
-          .filter((value) => value !== undefined && value !== null)
-          .join(' ')
-          .toLocaleLowerCase('id-ID');
+      const searchableText = [
+        product.name,
+        product.version,
+        product.body,
+        product._id,
+      ]
+        .filter((value) => value !== undefined && value !== null)
+        .join(' ')
+        .toLocaleLowerCase('id-ID');
 
-        const matchesSearch =
-          keyword.length === 0 || searchableText.includes(keyword);
-        return matchesSearch;
-      },
-    );
+      const matchesSearch =
+        keyword.length === 0 || searchableText.includes(keyword);
+      return matchesSearch;
+    });
   }, [allProductRequirements, search]);
 
   const selectedRequirements = allProductRequirements.filter((requirement) =>
@@ -322,6 +317,8 @@ export default function CreateProductionOrderPage() {
                 plannedStartDate,
                 plannedEndDate,
                 notes: notes.trim(),
+                // Admin Produksi langsung mengerjakan proses pertama.
+                startFirstStep: true,
               }),
             },
           );
@@ -343,7 +340,8 @@ export default function CreateProductionOrderPage() {
       if (createdProductIds.length > 0) {
         setSelectedProducts((current) => {
           const remaining = { ...current };
-          for (const productId of createdProductIds) delete remaining[productId];
+          for (const productId of createdProductIds)
+            delete remaining[productId];
           return remaining;
         });
       }
@@ -449,12 +447,12 @@ export default function CreateProductionOrderPage() {
             className="flex flex-col gap-2 rounded-xl border border-green-200 bg-green-50 p-3 text-xs text-green-800 sm:flex-row sm:items-center sm:justify-between"
           >
             <p>{notice}</p>
-            <Link
+            {/* <Link
               href="/admin-produksi/assignment"
               className="font-semibold underline underline-offset-4"
             >
               Lanjut ke Assignment
-            </Link>
+            </Link> */}
           </div>
         )}
 
@@ -469,21 +467,51 @@ export default function CreateProductionOrderPage() {
 
         <form onSubmit={createBatch} className={`${panelClass} space-y-4`}>
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-red-600">Jadwal</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-red-600">
+              Jadwal
+            </p>
             <h2 className="mt-1 text-lg font-bold">Jadwal Produksi</h2>
             <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
-                <label htmlFor="planned-start" className={labelClass}>Tanggal mulai</label>
-                <input id="planned-start" type="date" value={plannedStartDate} onChange={(event) => setPlannedStartDate(event.target.value)} required className={inputClass} />
+                <label htmlFor="planned-start" className={labelClass}>
+                  Tanggal mulai
+                </label>
+                <input
+                  id="planned-start"
+                  type="date"
+                  value={plannedStartDate}
+                  onChange={(event) => setPlannedStartDate(event.target.value)}
+                  required
+                  className={inputClass}
+                />
               </div>
               <div>
-                <label htmlFor="planned-end" className={labelClass}>Tanggal selesai</label>
-                <input id="planned-end" type="date" value={plannedEndDate} min={plannedStartDate || undefined} onChange={(event) => setPlannedEndDate(event.target.value)} required className={inputClass} />
+                <label htmlFor="planned-end" className={labelClass}>
+                  Tanggal selesai
+                </label>
+                <input
+                  id="planned-end"
+                  type="date"
+                  value={plannedEndDate}
+                  min={plannedStartDate || undefined}
+                  onChange={(event) => setPlannedEndDate(event.target.value)}
+                  required
+                  className={inputClass}
+                />
               </div>
             </div>
             <div className="mt-4">
-              <label htmlFor="batch-notes" className={labelClass}>Catatan (opsional)</label>
-              <textarea id="batch-notes" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Catatan produksi (opsional)" rows={2} className={inputClass} />
+              <label htmlFor="batch-notes" className={labelClass}>
+                Catatan (opsional)
+              </label>
+              <textarea
+                id="batch-notes"
+                value={notes}
+                onChange={(event) => setNotes(event.target.value)}
+                placeholder="Catatan produksi (opsional)"
+                rows={2}
+                className={inputClass}
+              />
             </div>
           </div>
 
@@ -514,18 +542,38 @@ export default function CreateProductionOrderPage() {
               {search.trim() && (
                 <div className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-slate-200 bg-white">
                   {isLoading || isProductsLoading ? (
-                    <p className="px-4 py-4 text-sm text-slate-500">Memuat produk...</p>
+                    <p className="px-4 py-4 text-sm text-slate-500">
+                      Memuat produk...
+                    </p>
                   ) : isError || isProductsError ? (
                     <div className="px-4 py-4">
-                      <p className="text-sm text-red-700">Gagal memuat produk: {getErrorMessage(productsError ?? error)}</p>
-                      <button type="button" onClick={() => { void refetch(); void refetchProducts(); }} className="mt-2 text-sm font-semibold text-red-600">Coba lagi</button>
+                      <p className="text-sm text-red-700">
+                        Gagal memuat produk:{' '}
+                        {getErrorMessage(productsError ?? error)}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void refetch();
+                          void refetchProducts();
+                        }}
+                        className="mt-2 text-sm font-semibold text-red-600"
+                      >
+                        Coba lagi
+                      </button>
                     </div>
                   ) : filteredRequirements.length === 0 ? (
-                    <p className="px-4 py-4 text-sm text-slate-500">Produk tidak ditemukan.</p>
+                    <p className="px-4 py-4 text-sm text-slate-500">
+                      Produk tidak ditemukan.
+                    </p>
                   ) : (
                     filteredRequirements.map((requirement) => {
                       const product = requirement.product;
-                      const alreadySelected = Object.prototype.hasOwnProperty.call(selectedProducts, product._id);
+                      const alreadySelected =
+                        Object.prototype.hasOwnProperty.call(
+                          selectedProducts,
+                          product._id,
+                        );
                       return (
                         <button
                           key={product._id}
@@ -535,12 +583,23 @@ export default function CreateProductionOrderPage() {
                           className="flex w-full items-center justify-between gap-3 border-b border-slate-100 px-3 py-2 text-left last:border-b-0 hover:bg-red-50/50 disabled:cursor-default disabled:opacity-60"
                         >
                           <span className="min-w-0">
-                            <span className="block truncate text-sm font-semibold text-slate-900">{product.name}</span>
+                            <span className="block truncate text-sm font-semibold text-slate-900">
+                              {product.name}
+                            </span>
                             <span className="mt-0.5 block text-[11px] text-slate-500">
-                              {[product.version ? `Versi ${product.version}` : '', product.body ? `Jenis ${product.body}` : ''].filter(Boolean).join(' · ')}
+                              {[
+                                product.version
+                                  ? `Versi ${product.version}`
+                                  : '',
+                                product.body ? `Jenis ${product.body}` : '',
+                              ]
+                                .filter(Boolean)
+                                .join(' · ')}
                             </span>
                           </span>
-                          <span className="shrink-0 text-xs font-semibold text-red-600">{alreadySelected ? 'Ditambahkan' : '+ Tambah'}</span>
+                          <span className="shrink-0 text-xs font-semibold text-red-600">
+                            {alreadySelected ? 'Ditambahkan' : '+ Tambah'}
+                          </span>
                         </button>
                       );
                     })
@@ -551,58 +610,111 @@ export default function CreateProductionOrderPage() {
 
             <div className="mt-4 space-y-2">
               <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-slate-700">Produk dipilih</h3>
-                <span className="text-xs text-slate-500">{selectedCount} produk</span>
+                <h3 className="text-sm font-semibold text-slate-700">
+                  Produk dipilih
+                </h3>
+                <span className="text-xs text-slate-500">
+                  {selectedCount} produk
+                </span>
               </div>
               {selectedRequirements.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-slate-300 px-3 py-4 text-center">
-                  <p className="text-xs text-slate-500">Belum ada produk dipilih.</p>
+                  <p className="text-xs text-slate-500">
+                    Belum ada produk dipilih.
+                  </p>
                 </div>
-              ) : selectedRequirements.map((requirement) => {
-                const product = requirement.product;
-                return (
-                  <article key={product._id} className="rounded-lg border border-red-100 bg-red-50/30 p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <h3 className="break-words font-bold text-slate-900">{product.name}</h3>
-                        <p className="mt-1 text-xs text-slate-500">
-                          {[product.version ? `Versi ${product.version}` : '', product.body ? `Jenis ${product.body}` : ''].filter(Boolean).join(' · ') || `ID: ${product._id}`}
+              ) : (
+                selectedRequirements.map((requirement) => {
+                  const product = requirement.product;
+                  return (
+                    <article
+                      key={product._id}
+                      className="rounded-lg border border-red-100 bg-red-50/30 p-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <h3 className="break-words font-bold text-slate-900">
+                            {product.name}
+                          </h3>
+                          <p className="mt-1 text-xs text-slate-500">
+                            {[
+                              product.version ? `Versi ${product.version}` : '',
+                              product.body ? `Jenis ${product.body}` : '',
+                            ]
+                              .filter(Boolean)
+                              .join(' · ') || `ID: ${product._id}`}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeProduct(product._id)}
+                          className="shrink-0 rounded-lg border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50"
+                        >
+                          Hapus
+                        </button>
+                      </div>
+
+                      <div className="mt-3 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                        {[
+                          ['Kebutuhan', requirement.productionNeed],
+                          [
+                            'Stok tersedia',
+                            requirement.inventory.availableQuantity,
+                          ],
+                          ['Terencana', requirement.production.plannedQuantity],
+                          [
+                            'Dalam proses',
+                            requirement.production.inProgressQuantity,
+                          ],
+                        ].map(([label, value]) => (
+                          <div key={label} className="rounded-md bg-white p-2">
+                            <p className="text-[11px] text-slate-500">
+                              {label}
+                            </p>
+                            <p className="mt-0.5 text-sm font-semibold text-slate-900">
+                              {formatNumber(Number(value))}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="mt-3 max-w-xs">
+                        <label
+                          htmlFor={`quantity-${product._id}`}
+                          className={labelClass}
+                        >
+                          Jumlah produksi
+                        </label>
+                        <input
+                          id={`quantity-${product._id}`}
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={selectedProducts[product._id]}
+                          onChange={(event) =>
+                            changeQuantity(product._id, event.target.value)
+                          }
+                          aria-describedby={`quantity-help-${product._id}`}
+                          className={inputClass}
+                        />
+                        <p
+                          id={`quantity-help-${product._id}`}
+                          className="mt-1 text-[11px] text-slate-500"
+                        >
+                          Minimal{' '}
+                          {formatNumber(
+                            Math.max(
+                              1,
+                              Number(requirement.productionNeed) || 0,
+                            ),
+                          )}{' '}
+                          unit.
                         </p>
                       </div>
-                      <button type="button" onClick={() => removeProduct(product._id)} className="shrink-0 rounded-lg border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50">Hapus</button>
-                    </div>
-
-                    <div className="mt-3 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
-                      {[
-                        ['Kebutuhan', requirement.productionNeed],
-                        ['Stok tersedia', requirement.inventory.availableQuantity],
-                        ['Terencana', requirement.production.plannedQuantity],
-                        ['Dalam proses', requirement.production.inProgressQuantity],
-                      ].map(([label, value]) => (
-                        <div key={label} className="rounded-md bg-white p-2">
-                          <p className="text-[11px] text-slate-500">{label}</p>
-                          <p className="mt-0.5 text-sm font-semibold text-slate-900">{formatNumber(Number(value))}</p>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="mt-3 max-w-xs">
-                      <label htmlFor={`quantity-${product._id}`} className={labelClass}>Jumlah produksi</label>
-                      <input
-                        id={`quantity-${product._id}`}
-                        type="number"
-                        min={1}
-                        step={1}
-                        value={selectedProducts[product._id]}
-                        onChange={(event) => changeQuantity(product._id, event.target.value)}
-                        aria-describedby={`quantity-help-${product._id}`}
-                        className={inputClass}
-                      />
-                      <p id={`quantity-help-${product._id}`} className="mt-1 text-[11px] text-slate-500">Minimal {formatNumber(Math.max(1, Number(requirement.productionNeed) || 0))} unit.</p>
-                    </div>
-                  </article>
-                );
-              })}
+                    </article>
+                  );
+                })
+              )}
             </div>
           </div>
 
@@ -610,12 +722,31 @@ export default function CreateProductionOrderPage() {
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h2 className="text-sm font-bold">Ringkasan</h2>
-                <p className="mt-0.5 text-xs text-slate-500">{selectedCount} produk · {formatNumber(totalQuantity)} unit</p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {selectedCount} produk · {formatNumber(totalQuantity)} unit
+                </p>
               </div>
             </div>
             <div className="mt-3 flex flex-col-reverse gap-2 border-t border-slate-100 pt-3 sm:flex-row sm:justify-end">
-              <button type="button" onClick={clearSelection} disabled={selectedCount === 0 || isSubmitting} className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">Hapus pilihan</button>
-              <button type="submit" disabled={isSubmitting || isLoading || isError || isProductsLoading || isProductsError} className="min-h-12 rounded-lg bg-red-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50">
+              <button
+                type="button"
+                onClick={clearSelection}
+                disabled={selectedCount === 0 || isSubmitting}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Hapus pilihan
+              </button>
+              <button
+                type="submit"
+                disabled={
+                  isSubmitting ||
+                  isLoading ||
+                  isError ||
+                  isProductsLoading ||
+                  isProductsError
+                }
+                className="min-h-12 rounded-lg bg-red-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
                 {isSubmitting ? 'Membuat batch dan PO...' : 'Buat Batch & PO'}
               </button>
             </div>
